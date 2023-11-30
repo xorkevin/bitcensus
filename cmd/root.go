@@ -12,9 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"xorkevin.dev/bitcensus/census"
 	"xorkevin.dev/bitcensus/dbsql"
-	"xorkevin.dev/hunter2/h2streamhash"
-	"xorkevin.dev/hunter2/h2streamhash/blake2bstream"
 	"xorkevin.dev/kerrors"
 	"xorkevin.dev/kfs"
 	"xorkevin.dev/klog"
@@ -58,6 +57,7 @@ func (c *Cmd) Execute() {
 	rootCmd.PersistentFlags().BoolVar(&c.rootFlags.logJSON, "log-json", false, "output json logs")
 
 	viper.SetDefault("statedbdir", getXDGDataDir())
+	viper.SetDefault("sync", census.SyncConfig{})
 
 	c.rootCmd = rootCmd
 
@@ -79,16 +79,6 @@ func (c *Cmd) getStateDBDir() (fs.FS, string) {
 		}
 	}
 	return kfs.DirFS(dbdir), dbdir
-}
-
-func (c *Cmd) createHasherVerifier() (map[string]h2streamhash.Hasher, *h2streamhash.Verifier) {
-	hasher := blake2bstream.NewHasher(blake2bstream.Config{})
-	algs := map[string]h2streamhash.Hasher{
-		hasher.ID(): hasher,
-	}
-	verifier := h2streamhash.NewVerifier()
-	verifier.Register(hasher)
-	return algs, verifier
 }
 
 func (c *Cmd) getStateDB(name string, mode string) (any, error) {
