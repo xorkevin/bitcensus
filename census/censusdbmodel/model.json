@@ -1,0 +1,47 @@
+{
+  "$schema": "https://xorkevin.dev/forge/schema/modelschema.json",
+  "models": {
+    "file": {
+      "model": {
+        "indicies": [
+          {
+            "name": "hash",
+            "columns": [{"col": "hash"}]
+          }
+        ]
+      },
+      "queries": {
+        "Model": [
+          {
+            "kind": "getoneeq",
+            "name": "ByName",
+            "conditions": [{"col": "name"}]
+          },
+          {
+            "kind": "deleq",
+            "name": "ByName",
+            "conditions": [{"col": "name"}]
+          },
+          {
+            "kind": "getgroup",
+            "name": "All",
+            "order": [{"col": "name"}]
+          },
+          {
+            "kind": "getgroupeq",
+            "name": "GtName",
+            "conditions": [{"col": "name", "cond": "gt"}],
+            "order": [{"col": "name"}]
+          }
+        ],
+        "fileProps": [
+          {
+            "kind": "updeq",
+            "name": "ByName",
+            "conditions": [{"col": "name"}]
+          }
+        ]
+      }
+    }
+  }
+}
