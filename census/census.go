@@ -104,7 +104,7 @@ func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (ce
 	return files, nil
 }
 
-func (c *Census) SyncRepos(ctx context.Context, cfg SyncConfig) error {
+func (c *Census) SyncRepos(ctx context.Context, cfg SyncConfig, rmAfter bool, dryRun bool) error {
 	names := make([]string, 0, len(cfg.Repos))
 	for k := range cfg.Repos {
 		names = append(names, k)
@@ -114,7 +114,7 @@ func (c *Census) SyncRepos(ctx context.Context, cfg SyncConfig) error {
 	for _, k := range names {
 		repoctx := klog.CtxWithAttrs(ctx, klog.AString("repo", k))
 		c.log.Info(repoctx, "Syncing repo")
-		if err := c.SyncRepo(repoctx, k, cfg.Repos[k]); err != nil {
+		if err := c.SyncRepo(repoctx, k, cfg.Repos[k], rmAfter, dryRun); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed syncing repo %s", k))
 		}
 	}
@@ -132,16 +132,28 @@ func (c *Census) getExistingEntry(ctx context.Context, files censusdbmodel.Repo,
 	return m, nil
 }
 
-func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig) error {
+const (
+	sqliteFileBatchSize = 32
+)
+
+func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, rmAfter bool, dryRun bool) error {
 	files, err := c.getFilesRepo(ctx, name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
+	}
+	for _, i := range cfg.Dirs {
+		if !i.Exact {
+			p := path.Clean(i.Path)
+			if _, err := regexp.Compile(i.Match); err != nil {
+				return kerrors.WithMsg(err, fmt.Sprintf("Invalid match regex for dir %s", p))
+			}
+		}
 	}
 	rootDir := kfs.DirFS(cfg.Path)
 	for _, i := range cfg.Dirs {
 		p := path.Clean(i.Path)
 		if i.Exact {
-			if err := c.syncRepoFileFS(ctx, files, rootDir, p); err != nil {
+			if err := c.syncRepoFileFS(ctx, files, rootDir, p, dryRun); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
@@ -157,15 +169,44 @@ func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig) erro
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
-			if err := c.syncRepoDir(ctx, files, dir, r, p, fs.FileInfoToDirEntry(info)); err != nil {
+			if err := c.syncRepoDir(ctx, files, dir, r, p, fs.FileInfoToDirEntry(info), dryRun); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync dir %s", p))
 			}
+		}
+	}
+	if rmAfter {
+		cursor := ""
+		for {
+			m, err := files.List(ctx, sqliteFileBatchSize, cursor)
+			if err != nil {
+				return kerrors.WithMsg(err, "Failed to list db files")
+			}
+			if len(m) == 0 {
+				return nil
+			}
+			for _, i := range m {
+				if _, err := fs.Stat(rootDir, i.Name); err != nil {
+					if !errors.Is(err, fs.ErrNotExist) {
+						return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat file %s", i.Name))
+					}
+					if !dryRun {
+						if err := files.Delete(ctx, i.Name); err != nil {
+							return kerrors.WithMsg(err, fmt.Sprintf("Failed deleting file entry %s", i.Name))
+						}
+					}
+					c.log.Info(ctx, "Deleted file", klog.AString("path", i.Name))
+				}
+			}
+			if len(m) < sqliteFileBatchSize {
+				return nil
+			}
+			cursor = m[len(m)-1].Name
 		}
 	}
 	return nil
 }
 
-func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry) error {
+func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, dryRun bool) error {
 	if !entry.IsDir() {
 		if !match.MatchString(p) {
 			c.log.Debug(ctx, "Skipping unmatched file",
@@ -174,7 +215,7 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 			return nil
 		}
 
-		if err := c.syncRepoFileFS(ctx, files, dir, p); err != nil {
+		if err := c.syncRepoFileFS(ctx, files, dir, p, dryRun); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 		}
 		return nil
@@ -187,14 +228,14 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 		klog.AString("path", p),
 	)
 	for _, i := range entries {
-		if err := c.syncRepoDir(ctx, files, dir, match, path.Join(p, i.Name()), i); err != nil {
+		if err := c.syncRepoDir(ctx, files, dir, match, path.Join(p, i.Name()), i, dryRun); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, p string) error {
+func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, p string, dryRun bool) error {
 	info, err := fs.Stat(dir, p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -224,18 +265,20 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		return kerrors.WithMsg(err, "Failed to hash file")
 	}
 
-	m := files.New(p, info.Size(), info.ModTime().UnixNano(), h)
-	if existingEntry == nil {
-		if err := files.Insert(ctx, m); err != nil {
-			return kerrors.WithMsg(err, "Failed adding file entry")
-		}
-	} else {
-		if err := files.Update(ctx, m); err != nil {
-			return kerrors.WithMsg(err, "Failed updating file entry")
+	if !dryRun {
+		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h)
+		if existingEntry == nil {
+			if err := files.Insert(ctx, m); err != nil {
+				return kerrors.WithMsg(err, "Failed adding file entry")
+			}
+		} else {
+			if err := files.Update(ctx, m); err != nil {
+				return kerrors.WithMsg(err, "Failed updating file entry")
+			}
 		}
 	}
-
 	c.log.Info(ctx, "Added file", klog.AString("path", p))
+
 	return nil
 }
 
