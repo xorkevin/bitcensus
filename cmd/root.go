@@ -3,8 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io/fs"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,9 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"xorkevin.dev/bitcensus/census"
-	"xorkevin.dev/bitcensus/dbsql"
 	"xorkevin.dev/kerrors"
-	"xorkevin.dev/kfs"
 	"xorkevin.dev/klog"
 )
 
@@ -70,7 +66,7 @@ func (c *Cmd) Execute() {
 	}
 }
 
-func (c *Cmd) getStateDBDir() (fs.FS, string) {
+func (c *Cmd) getStateDBDir() string {
 	dbdir := c.rootFlags.stateDBDir
 	if dbdir == "" {
 		dbdir = viper.GetString("statedbdir")
@@ -78,32 +74,7 @@ func (c *Cmd) getStateDBDir() (fs.FS, string) {
 			dbdir = "."
 		}
 	}
-	return kfs.DirFS(dbdir), dbdir
-}
-
-func (c *Cmd) getStateDB(name string, mode string) (any, error) {
-	_, dataDir := c.getStateDBDir()
-
-	// url must be in the form of
-	// file:rel/path/to/file.db?optquery=value&otheroptquery=value
-	u := url.URL{
-		Scheme: "file",
-		Opaque: path.Join(dataDir, "db", name+".db"),
-	}
-	q := u.Query()
-	q.Set("mode", mode)
-	u.RawQuery = q.Encode()
-	d := dbsql.NewSQLClient(c.log.Logger.Sublogger("db"), u.String())
-	if err := d.Init(); err != nil {
-		return nil, kerrors.WithMsg(err, "Failed to init sqlite db client")
-	}
-
-	c.log.Info(context.Background(), "Using statedb",
-		klog.AString("db.engine", "sqlite"),
-		klog.AString("db.file", u.Opaque),
-	)
-
-	return nil, nil
+	return dbdir
 }
 
 // initConfig reads in config file and ENV variables if set.
