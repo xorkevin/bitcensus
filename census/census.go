@@ -48,8 +48,9 @@ type (
 	}
 
 	RepoConfig struct {
-		Path string          `mapstructure:"path"`
-		Dirs []RepoDirConfig `mapstructure:"dirs"`
+		Path    string          `mapstructure:"path"`
+		Dirs    []RepoDirConfig `mapstructure:"dirs"`
+		HashAlg string          `mapstructure:"hash_alg"`
 	}
 
 	SyncConfig struct {
@@ -137,6 +138,11 @@ const (
 )
 
 func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, rmAfter bool, dryRun bool) error {
+	hasher := c.defaultHasher
+	if cfg.HashAlg != "" {
+		hasher = c.hashers[cfg.HashAlg]
+	}
+
 	files, err := c.getFilesRepo(ctx, name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
@@ -153,7 +159,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, rmAf
 	for _, i := range cfg.Dirs {
 		p := path.Clean(i.Path)
 		if i.Exact {
-			if err := c.syncRepoFileFS(ctx, files, rootDir, p, dryRun); err != nil {
+			if err := c.syncRepoFileFS(ctx, files, hasher, rootDir, p, dryRun); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
@@ -169,7 +175,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, rmAf
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
-			if err := c.syncRepoDir(ctx, files, dir, r, p, fs.FileInfoToDirEntry(info), dryRun); err != nil {
+			if err := c.syncRepoDir(ctx, files, hasher, dir, r, p, fs.FileInfoToDirEntry(info), dryRun); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync dir %s", p))
 			}
 		}
@@ -206,7 +212,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, rmAf
 	return nil
 }
 
-func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, dryRun bool) error {
+func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, hasher h2streamhash.Hasher, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, dryRun bool) error {
 	if !entry.IsDir() {
 		if !match.MatchString(p) {
 			c.log.Debug(ctx, "Skipping unmatched file",
@@ -215,7 +221,7 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 			return nil
 		}
 
-		if err := c.syncRepoFileFS(ctx, files, dir, p, dryRun); err != nil {
+		if err := c.syncRepoFileFS(ctx, files, hasher, dir, p, dryRun); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 		}
 		return nil
@@ -228,14 +234,14 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 		klog.AString("path", p),
 	)
 	for _, i := range entries {
-		if err := c.syncRepoDir(ctx, files, dir, match, path.Join(p, i.Name()), i, dryRun); err != nil {
+		if err := c.syncRepoDir(ctx, files, hasher, dir, match, path.Join(p, i.Name()), i, dryRun); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, p string, dryRun bool) error {
+func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, hasher h2streamhash.Hasher, dir fs.FS, p string, dryRun bool) error {
 	info, err := fs.Stat(dir, p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -260,7 +266,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		return nil
 	}
 
-	h, err := c.hashFile(dir, p)
+	h, err := c.hashFile(hasher, dir, p, existingEntry)
 	if err != nil {
 		return kerrors.WithMsg(err, "Failed to hash file")
 	}
@@ -282,7 +288,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 	return nil
 }
 
-func (c *Census) hashFile(dir fs.FS, name string) (_ string, retErr error) {
+func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry *censusdbmodel.Model) (_ string, retErr error) {
 	f, err := dir.Open(name)
 	if err != nil {
 		return "", kerrors.WithMsg(err, "Failed opening file")
@@ -292,9 +298,19 @@ func (c *Census) hashFile(dir fs.FS, name string) (_ string, retErr error) {
 			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close file"))
 		}
 	}()
-	h, err := c.defaultHasher.Hash()
-	if err != nil {
-		return "", kerrors.WithMsg(err, "Failed creating hash")
+	var h h2streamhash.Hash
+	if existingEntry != nil {
+		var err error
+		h, err = c.verifier.Verify(existingEntry.Hash)
+		if err != nil {
+			return "", kerrors.WithMsg(err, "Failed creating hash")
+		}
+	} else {
+		var err error
+		h, err = hasher.Hash()
+		if err != nil {
+			return "", kerrors.WithMsg(err, "Failed creating hash")
+		}
 	}
 	if _, err := io.Copy(h, f); err != nil {
 		return "", kerrors.WithMsg(err, "Failed reading file")
