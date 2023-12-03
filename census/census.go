@@ -305,12 +305,12 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, h
 		}
 	}
 
-	h, err := c.hashFile(hasher, dir, p, existingEntry)
-	if err != nil {
-		return kerrors.WithMsg(err, "Failed to hash file")
-	}
-
 	if !flags.DryRun {
+		h, err := c.hashFile(hasher, dir, p, existingEntry)
+		if err != nil {
+			return kerrors.WithMsg(err, "Failed to hash file")
+		}
+
 		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h)
 		if existingEntry == nil {
 			if err := files.Insert(ctx, m); err != nil {

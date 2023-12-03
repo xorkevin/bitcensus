@@ -1,0 +1,53 @@
+.nh
+.TH "bitcensus" "1" "Dec 2023" "" ""
+
+.SH NAME
+.PP
+bitcensus-import - Imports repo dbs
+
+
+.SH SYNOPSIS
+.PP
+\fBbitcensus import [flags]\fP
+
+
+.SH DESCRIPTION
+.PP
+Imports repo dbs
+
+
+.SH OPTIONS
+.PP
+\fB-f\fP, \fB--force\fP[=false]
+	overwrite existing files in the db
+
+.PP
+\fB-h\fP, \fB--help\fP[=false]
+	help for import
+
+.PP
+\fB-r\fP, \fB--repo\fP=""
+	repo name
+
+.PP
+\fB--state-db-dir\fP=""
+	state db directory (default is $XDG_DATA_HOME/bitcensus)
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+.PP
+\fB--config\fP=""
+	config file (default is $XDG_CONFIG_HOME/bitcensus.json)
+
+.PP
+\fB--log-json\fP[=false]
+	output json logs
+
+.PP
+\fB--log-level\fP="info"
+	log level
+
+
+.SH SEE ALSO
+.PP
+\fBbitcensus(1)\fP

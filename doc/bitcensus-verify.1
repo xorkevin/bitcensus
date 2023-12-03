@@ -1,0 +1,57 @@
+.nh
+.TH "bitcensus" "1" "Dec 2023" "" ""
+
+.SH NAME
+.PP
+bitcensus-verify - Verifies files
+
+
+.SH SYNOPSIS
+.PP
+\fBbitcensus verify [flags]\fP
+
+
+.SH DESCRIPTION
+.PP
+Verifies files
+
+
+.SH OPTIONS
+.PP
+\fB-b\fP, \fB--before\fP="168h"
+	age of files to verify ("now" will verify all)
+
+.PP
+\fB-f\fP, \fB--force\fP[=false]
+	hashes files regardless of file size and modtime heuristic
+
+.PP
+\fB-h\fP, \fB--help\fP[=false]
+	help for verify
+
+.PP
+\fB-r\fP, \fB--repo\fP=""
+	repo name (empty means all)
+
+.PP
+\fB--state-db-dir\fP=""
+	state db directory (default is $XDG_DATA_HOME/bitcensus)
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+.PP
+\fB--config\fP=""
+	config file (default is $XDG_CONFIG_HOME/bitcensus.json)
+
+.PP
+\fB--log-json\fP[=false]
+	output json logs
+
+.PP
+\fB--log-level\fP="info"
+	log level
+
+
+.SH SEE ALSO
+.PP
+\fBbitcensus(1)\fP

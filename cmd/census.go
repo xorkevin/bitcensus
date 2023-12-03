@@ -14,8 +14,8 @@ import (
 func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 	syncCmd := &cobra.Command{
 		Use:               "sync",
-		Short:             "syncs repo dbs",
-		Long:              `syncs repo dbs`,
+		Short:             "Syncs repo dbs",
+		Long:              `Syncs repo dbs`,
 		Run:               c.execSync,
 		DisableAutoGenTag: true,
 	}
@@ -28,8 +28,8 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 
 	verifyCmd := &cobra.Command{
 		Use:               "verify",
-		Short:             "verifies files",
-		Long:              `verifies files`,
+		Short:             "Verifies files",
+		Long:              `Verifies files`,
 		Run:               c.execVerify,
 		DisableAutoGenTag: true,
 	}
@@ -41,8 +41,8 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 
 	exportCmd := &cobra.Command{
 		Use:               "export",
-		Short:             "exports repo dbs",
-		Long:              `exports repo dbs`,
+		Short:             "Exports repo dbs",
+		Long:              `Exports repo dbs`,
 		Run:               c.execExport,
 		DisableAutoGenTag: true,
 	}
@@ -53,13 +53,13 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 
 	importCmd := &cobra.Command{
 		Use:               "import",
-		Short:             "imports repo dbs",
-		Long:              `imports repo dbs`,
+		Short:             "Imports repo dbs",
+		Long:              `Imports repo dbs`,
 		Run:               c.execImport,
 		DisableAutoGenTag: true,
 	}
 	importCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
-	verifyCmd.PersistentFlags().BoolVarP(&c.censusFlags.force, "force", "f", false, "overwrite existing files in the db")
+	importCmd.PersistentFlags().BoolVarP(&c.censusFlags.force, "force", "f", false, "overwrite existing files in the db")
 	importCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name")
 	importCmd.MarkPersistentFlagRequired("repo")
 	cmd.AddCommand(importCmd)

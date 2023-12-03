@@ -1,0 +1,61 @@
+.nh
+.TH "bitcensus" "1" "Dec 2023" "" ""
+
+.SH NAME
+.PP
+bitcensus-sync - Syncs repo dbs
+
+
+.SH SYNOPSIS
+.PP
+\fBbitcensus sync [flags]\fP
+
+
+.SH DESCRIPTION
+.PP
+Syncs repo dbs
+
+
+.SH OPTIONS
+.PP
+\fB-n\fP, \fB--dry-run\fP[=false]
+	do not modify the db and dry run the operation
+
+.PP
+\fB-f\fP, \fB--force\fP[=false]
+	hashes files regardless of file size and modtime heuristic
+
+.PP
+\fB-h\fP, \fB--help\fP[=false]
+	help for sync
+
+.PP
+\fB-r\fP, \fB--repo\fP=""
+	repo name (empty means all)
+
+.PP
+\fB--rm\fP[=false]
+	removes deleted files from the db
+
+.PP
+\fB--state-db-dir\fP=""
+	state db directory (default is $XDG_DATA_HOME/bitcensus)
+
+
+.SH OPTIONS INHERITED FROM PARENT COMMANDS
+.PP
+\fB--config\fP=""
+	config file (default is $XDG_CONFIG_HOME/bitcensus.json)
+
+.PP
+\fB--log-json\fP[=false]
+	output json logs
+
+.PP
+\fB--log-level\fP="info"
+	log level
+
+
+.SH SEE ALSO
+.PP
+\fBbitcensus(1)\fP
