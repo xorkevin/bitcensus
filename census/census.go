@@ -34,6 +34,17 @@ func (e errNotFound) Error() string {
 }
 
 type (
+	ChecksumError struct {
+		Repo     string
+		Mismatch []string
+	}
+)
+
+func (e *ChecksumError) Error() string {
+	return "Checksum error"
+}
+
+type (
 	Census struct {
 		log           *klog.LevelLogger
 		dataDir       string
@@ -333,6 +344,23 @@ func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, ex
 	return h.Sum(), nil
 }
 
+func (c *Census) VerifyRepos(ctx context.Context, name string, cfg SyncConfig, flags VerifyFlags) error {
+	names := make([]string, 0, len(cfg.Repos))
+	for k := range cfg.Repos {
+		names = append(names, k)
+	}
+	slices.Sort(names)
+
+	for _, k := range names {
+		repoctx := klog.CtxWithAttrs(ctx, klog.AString("repo", k))
+		c.log.Info(repoctx, "Verifying repo")
+		if err := c.VerifyRepo(repoctx, k, cfg.Repos[k], flags); err != nil {
+			return kerrors.WithMsg(err, fmt.Sprintf("Failed verifying repo %s", k))
+		}
+	}
+	return nil
+}
+
 func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, flags VerifyFlags) error {
 	hasher := c.defaultHasher
 	if cfg.HashAlg != "" {
@@ -343,6 +371,8 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
+
+	var mismatch []string
 
 	rootDir := kfs.DirFS(cfg.Path)
 
@@ -356,7 +386,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 			break
 		}
 		for _, i := range m {
-			if flags.After.After(time.UnixMilli(i.LastVerifiedAt)) {
+			if !flags.After.IsZero() && flags.After.After(time.UnixMilli(i.LastVerifiedAt)) {
 				continue
 			}
 
@@ -367,12 +397,16 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 				}
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat file %s", i.Name))
 			}
-			h, err := c.verifyFile(hasher, rootDir, i.Name, i, flags.Force)
+			match, h, err := c.verifyFile(hasher, rootDir, i.Name, i, flags.Force)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to verify file %s", i.Name))
 			}
-			if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), h)); err != nil {
-				return kerrors.WithMsg(err, "Failed updating file entry")
+			if match {
+				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), h)); err != nil {
+					return kerrors.WithMsg(err, "Failed updating file entry")
+				}
+			} else {
+				mismatch = append(mismatch, i.Name)
 			}
 		}
 		if len(m) < sqliteFileBatchSize {
@@ -381,13 +415,20 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 		cursor = m[len(m)-1].Name
 	}
 
+	if len(mismatch) != 0 {
+		return &ChecksumError{
+			Repo:     name,
+			Mismatch: mismatch,
+		}
+	}
+
 	return nil
 }
 
-func (c *Census) verifyFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry censusdbmodel.Model, force bool) (_ string, retErr error) {
+func (c *Census) verifyFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry censusdbmodel.Model, force bool) (_ bool, _ string, retErr error) {
 	vh, err := c.verifier.Verify(existingEntry.Hash)
 	if err != nil {
-		return "", kerrors.WithMsg(err, "Failed creating hash")
+		return false, "", kerrors.WithMsg(err, "Failed creating hash")
 	}
 	h := vh
 	var w io.Writer = vh
@@ -395,25 +436,24 @@ func (c *Census) verifyFile(hasher h2streamhash.Hasher, dir fs.FS, name string, 
 		var err error
 		h, err = hasher.Hash()
 		if err != nil {
-			return "", kerrors.WithMsg(err, "Failed creating hash")
+			return false, "", kerrors.WithMsg(err, "Failed creating hash")
 		}
 		w = io.MultiWriter(vh, h)
 	}
 	if err := c.readFile(w, dir, name); err != nil {
-		return "", err
+		return false, "", err
 	}
 	if err := vh.Close(); err != nil {
-		return "", kerrors.WithMsg(err, "Failed closing stream hash")
+		return false, "", kerrors.WithMsg(err, "Failed closing stream hash")
 	}
 	if err := h.Close(); err != nil {
-		return "", kerrors.WithMsg(err, "Failed closing stream hash")
+		return false, "", kerrors.WithMsg(err, "Failed closing stream hash")
 	}
-	if ok, err := vh.Verify(existingEntry.Hash); err != nil {
-		return "", kerrors.WithMsg(err, "Failed verifying checksum")
-	} else if !ok {
-		return "", kerrors.WithMsg(nil, "Checksum does not match")
+	ok, err := vh.Verify(existingEntry.Hash)
+	if err != nil {
+		return false, "", kerrors.WithMsg(err, "Failed verifying checksum")
 	}
-	return h.Sum(), nil
+	return ok, h.Sum(), nil
 }
 
 func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error) {
