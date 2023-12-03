@@ -17,8 +17,10 @@ import (
 
 	"xorkevin.dev/bitcensus/census/censusdbmodel"
 	"xorkevin.dev/bitcensus/dbsql"
+	"xorkevin.dev/bitcensus/util/bytefmt"
 	"xorkevin.dev/hunter2/h2streamhash"
 	"xorkevin.dev/hunter2/h2streamhash/blake2bstream"
+	"xorkevin.dev/hunter2/h2streamhash/blake3stream"
 	"xorkevin.dev/hunter2/h2streamhash/sha256stream"
 	"xorkevin.dev/kerrors"
 	"xorkevin.dev/kfs"
@@ -72,32 +74,35 @@ type (
 	SyncConfig map[string]RepoConfig
 
 	SyncFlags struct {
-		RmAfter bool
-		Force   bool
-		DryRun  bool
+		Prune  bool
+		Force  bool
+		DryRun bool
 	}
 
 	VerifyFlags struct {
-		Before time.Time
-		Force  bool
+		Before  time.Time
+		Upgrade bool
 	}
 )
 
 func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
+	b3sum := blake3stream.NewHasher(blake3stream.Config{})
 	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
 	sha256sum := sha256stream.NewHasher(sha256stream.Config{})
 	algs := map[string]h2streamhash.Hasher{
+		b3sum.ID():     b3sum,
 		b2sum.ID():     b2sum,
 		sha256sum.ID(): sha256sum,
 	}
 	verifier := h2streamhash.NewVerifier()
+	verifier.Register(b3sum)
 	verifier.Register(b2sum)
 	verifier.Register(sha256sum)
 	return &Census{
 		log:           klog.NewLevelLogger(log),
 		dataDir:       dataDir,
 		cfg:           cfg,
-		defaultHasher: b2sum,
+		defaultHasher: b3sum,
 		hashers:       algs,
 		verifier:      verifier,
 	}
@@ -217,7 +222,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 		}
 	}
 
-	if flags.RmAfter {
+	if flags.Prune {
 		cursor := ""
 		for {
 			m, err := files.List(ctx, sqliteFileBatchSize, cursor)
@@ -305,11 +310,17 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, h
 		}
 	}
 
+	c.log.Info(ctx, "Adding file",
+		klog.AString("path", p),
+		klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+	)
 	if !flags.DryRun {
+		start := time.Now()
 		h, err := c.hashFile(hasher, dir, p, existingEntry)
 		if err != nil {
 			return kerrors.WithMsg(err, "Failed to hash file")
 		}
+		duration := time.Since(start)
 
 		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h)
 		if existingEntry == nil {
@@ -321,10 +332,19 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, h
 				return kerrors.WithMsg(err, "Failed updating file entry")
 			}
 		}
+
+		c.log.Info(ctx, "Added file",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+		)
 	}
-	c.log.Info(ctx, "Added file", klog.AString("path", p))
 
 	return nil
+}
+
+func humanHashRate(size int64, duration time.Duration) string {
+	return bytefmt.ToString(float64(size)/duration.Seconds()) + "/s"
 }
 
 func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry *censusdbmodel.Model) (_ string, retErr error) {
@@ -406,7 +426,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 			break
 		}
 		for _, i := range m {
-			if !flags.Before.IsZero() && flags.Before.After(time.UnixMilli(i.LastVerifiedAt)) {
+			if !flags.Before.IsZero() && !time.UnixMilli(i.LastVerifiedAt).Before(flags.Before) {
 				c.log.Debug(ctx, "Skipping recently verified file", klog.AString("path", i.Name))
 				continue
 			}
@@ -418,17 +438,31 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 				}
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat file %s", i.Name))
 			}
-			match, h, err := c.verifyFile(hasher, rootDir, i.Name, i, flags.Force)
+			c.log.Info(ctx, "Verifying file",
+				klog.AString("path", i.Name),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			)
+			start := time.Now()
+			match, h, err := c.verifyFile(hasher, rootDir, i.Name, i, flags.Upgrade)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to verify file %s", i.Name))
 			}
+			duration := time.Since(start)
 			if match {
 				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), h)); err != nil {
 					return kerrors.WithMsg(err, "Failed updating file entry")
 				}
-				c.log.Info(ctx, "Verified file", klog.AString("path", i.Name))
+				c.log.Info(ctx, "Verified file",
+					klog.AString("path", i.Name),
+					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				)
 			} else {
-				c.log.Warn(ctx, "Checksum mismatch", klog.AString("path", i.Name))
+				c.log.Warn(ctx, "Checksum mismatch",
+					klog.AString("path", i.Name),
+					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				)
 				mismatch = append(mismatch, i.Name)
 			}
 		}

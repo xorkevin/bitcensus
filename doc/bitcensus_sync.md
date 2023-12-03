@@ -16,8 +16,8 @@ bitcensus sync [flags]
   -n, --dry-run               do not modify the db and dry run the operation
   -f, --force                 hashes files regardless of file size and modtime heuristic
   -h, --help                  help for sync
+      --prune                 removes deleted files from the db
   -r, --repo string           repo name (empty means all)
-      --rm                    removes deleted files from the db
       --state-db-dir string   state db directory (default is $XDG_DATA_HOME/bitcensus)
 ```
 

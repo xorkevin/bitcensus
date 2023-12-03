@@ -14,10 +14,10 @@ bitcensus verify [flags]
 
 ```
   -b, --before string         age of files to verify ("now" will verify all) (default "168h")
-  -f, --force                 hashes files regardless of file size and modtime heuristic
   -h, --help                  help for verify
   -r, --repo string           repo name (empty means all)
       --state-db-dir string   state db directory (default is $XDG_DATA_HOME/bitcensus)
+  -u, --upgrade               verify old hash and upgrade to new hash
 ```
 
 ### Options inherited from parent commands

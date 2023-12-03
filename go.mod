@@ -8,7 +8,7 @@ require (
 	github.com/stretchr/testify v1.8.4
 	modernc.org/sqlite v1.27.0
 	xorkevin.dev/forge v0.5.2
-	xorkevin.dev/hunter2 v0.2.15
+	xorkevin.dev/hunter2 v0.2.16
 	xorkevin.dev/kerrors v0.1.5
 	xorkevin.dev/kfs v0.1.2
 	xorkevin.dev/klog v0.1.0
@@ -23,6 +23,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
@@ -37,6 +38,7 @@ require (
 	github.com/spf13/cast v1.5.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/zeebo/blake3 v0.2.3 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/crypto v0.16.0 // indirect

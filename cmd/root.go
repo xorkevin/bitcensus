@@ -33,10 +33,11 @@ type (
 
 	censusFlags struct {
 		stateDBDir string
-		rmAfter    bool
+		prune      bool
 		force      bool
 		dryRun     bool
 		before     string
+		upgrade    bool
 		repo       string
 	}
 )

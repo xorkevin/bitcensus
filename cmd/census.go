@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/viper"
 	"xorkevin.dev/bitcensus/census"
 	"xorkevin.dev/kerrors"
+	"xorkevin.dev/klog"
 )
 
 func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
@@ -20,7 +21,7 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 		DisableAutoGenTag: true,
 	}
 	syncCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
-	syncCmd.PersistentFlags().BoolVar(&c.censusFlags.rmAfter, "rm", false, "removes deleted files from the db")
+	syncCmd.PersistentFlags().BoolVar(&c.censusFlags.prune, "prune", false, "removes deleted files from the db")
 	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.force, "force", "f", false, "hashes files regardless of file size and modtime heuristic")
 	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.dryRun, "dry-run", "n", false, "do not modify the db and dry run the operation")
 	syncCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name (empty means all)")
@@ -34,7 +35,7 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 		DisableAutoGenTag: true,
 	}
 	verifyCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
-	verifyCmd.PersistentFlags().BoolVarP(&c.censusFlags.force, "force", "f", false, "hashes files regardless of file size and modtime heuristic")
+	verifyCmd.PersistentFlags().BoolVarP(&c.censusFlags.upgrade, "upgrade", "u", false, "verify old hash and upgrade to new hash")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.before, "before", "b", "168h", "age of files to verify (\"now\" will verify all)")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name (empty means all)")
 	cmd.AddCommand(verifyCmd)
@@ -78,9 +79,9 @@ func (c *Cmd) getCensus() *census.Census {
 func (c *Cmd) execSync(cmd *cobra.Command, args []string) {
 	cen := c.getCensus()
 	flags := census.SyncFlags{
-		RmAfter: c.censusFlags.rmAfter,
-		Force:   c.censusFlags.force,
-		DryRun:  c.censusFlags.dryRun,
+		Prune:  c.censusFlags.prune,
+		Force:  c.censusFlags.force,
+		DryRun: c.censusFlags.dryRun,
 	}
 	if c.censusFlags.repo != "" {
 		if err := cen.SyncRepo(context.Background(), c.censusFlags.repo, flags); err != nil {
@@ -106,9 +107,12 @@ func (c *Cmd) execVerify(cmd *cobra.Command, args []string) {
 		}
 		before = time.Now().Round(0).Add(-dur)
 	}
+	c.log.Info(context.Background(), "Verifying files",
+		klog.AString("before", before.Format(time.RFC3339)),
+	)
 	flags := census.VerifyFlags{
-		Before: before,
-		Force:  c.censusFlags.force,
+		Before:  before,
+		Upgrade: c.censusFlags.upgrade,
 	}
 	if c.censusFlags.repo != "" {
 		if err := cen.VerifyRepo(context.Background(), c.censusFlags.repo, flags); err != nil {
