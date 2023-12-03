@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,18 +23,24 @@ func TestCensus(t *testing.T) {
 	dataDir := path.Join(rootDir, "bitcensus")
 	storageDir := path.Join(rootDir, "storage")
 
-	storedFiles := map[string]string{
-		"ignored_file":           `this file is ignored`,
+	repoHelloFiles := map[string]string{
 		"this/file/is/added.txt": `this file is added`,
 	}
-	{
-		var filemode fs.FileMode = 0o644
-		for k, v := range storedFiles {
-			name := filepath.FromSlash(path.Join(storageDir, k))
-			dir := filepath.Dir(name)
-			assert.NoError(os.MkdirAll(dir, 0o777))
-			assert.NoError(os.WriteFile(name, []byte(v), filemode))
-		}
+	otherFiles := map[string]string{
+		"ignored_file": `this file is ignored`,
+	}
+
+	addFile := func(name string, content string) {
+		name = filepath.FromSlash(path.Join(storageDir, name))
+		dir := filepath.Dir(name)
+		assert.NoError(os.MkdirAll(dir, 0o777))
+		assert.NoError(os.WriteFile(name, []byte(content), 0o644))
+	}
+	for k, v := range repoHelloFiles {
+		addFile(path.Join("hello", k), v)
+	}
+	for k, v := range otherFiles {
+		addFile(path.Join("hello", k), v)
 	}
 
 	census := NewCensus(klog.Discard{}, dataDir, SyncConfig{
@@ -45,7 +50,7 @@ func TestCensus(t *testing.T) {
 				Dirs: []RepoDirConfig{
 					{
 						Exact: false,
-						Path:  "abc",
+						Path:  "this",
 						Match: `.txt$`,
 					},
 				},
@@ -66,12 +71,12 @@ func TestCensus(t *testing.T) {
 			var entry FileEntry
 			assert.NoError(j.Decode(&entry))
 			count++
-			assert.Contains(storedFiles, entry.Name)
-			content := storedFiles[entry.Name]
-			assert.Equal(len(content), entry.Size)
+			assert.Contains(repoHelloFiles, entry.Name)
+			content := repoHelloFiles[entry.Name]
+			assert.Equal(int64(len(content)), entry.Size)
 			assert.NotZero(entry.ModTime)
 			assert.NotZero(entry.Checksum)
 		}
-		assert.Equal(len(storedFiles), count)
+		assert.Equal(len(repoHelloFiles), count)
 	}
 }

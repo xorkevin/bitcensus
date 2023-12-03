@@ -8,7 +8,9 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"time"
@@ -107,25 +109,22 @@ func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (ce
 	// url must be in the form of
 	// file:rel/path/to/file.db?optquery=value&otheroptquery=value
 	dir := path.Join(c.dataDir, "db")
-	u := url.URL{
-		Scheme: "file",
-		Opaque: path.Join(dir, name+".db"),
-	}
-	q := u.Query()
+	u := path.Join(dir, name+".db")
+	q := url.Values{}
 	q.Set("mode", mode)
-	u.RawQuery = q.Encode()
-	fmt.Println("url", u.String())
-	// if err := os.MkdirAll(filepath.FromSlash(dir), 0o777); err != nil {
-	// 	return nil, kerrors.WithMsg(err, "Failed to mkdir for db")
-	// }
-	d := dbsql.NewSQLClient(c.log.Logger.Sublogger("db"), u.String())
+	dsn := fmt.Sprintf("file:%s?%s", filepath.FromSlash(u), q.Encode())
+	fmt.Println("dsn", dsn)
+	if err := os.MkdirAll(filepath.FromSlash(dir), 0o777); err != nil {
+		return nil, nil, kerrors.WithMsg(err, "Failed to mkdir for db")
+	}
+	d := dbsql.NewSQLClient(c.log.Logger.Sublogger("db"), dsn)
 	if err := d.Init(); err != nil {
 		return nil, nil, kerrors.WithMsg(err, "Failed to init sqlite db client")
 	}
 
 	c.log.Info(context.Background(), "Using statedb",
 		klog.AString("db.engine", "sqlite"),
-		klog.AString("db.file", u.Opaque),
+		klog.AString("db.file", u),
 	)
 
 	files := censusdbmodel.New(d, "files")
@@ -176,7 +175,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 		hasher = c.hashers[cfg.HashAlg]
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(ctx, name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
@@ -207,19 +206,15 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
-			dir, err := fs.Sub(rootDir, p)
-			if err != nil {
-				return kerrors.WithMsg(err, fmt.Sprintf("Failed to get sub directory %s", p))
-			}
 			r, err := regexp.Compile(i.Match)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Invalid match regex for dir %s", p))
 			}
-			info, err := fs.Stat(dir, ".")
+			info, err := fs.Stat(rootDir, p)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
-			if err := c.syncRepoDir(ctx, files, hasher, dir, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
+			if err := c.syncRepoDir(ctx, files, hasher, rootDir, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync dir %s", p))
 			}
 		}
@@ -517,7 +512,7 @@ func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retE
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(ctx, name, "ro")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
@@ -526,9 +521,6 @@ func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retE
 			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close sql client"))
 		}
 	}()
-	if err := files.Setup(ctx); err != nil {
-		return kerrors.WithMsg(err, "Failed setting up files table")
-	}
 
 	j := json.NewEncoder(w)
 
@@ -565,7 +557,7 @@ func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, overr
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(ctx, name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
