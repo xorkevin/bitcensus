@@ -69,9 +69,7 @@ type (
 		HashAlg string          `mapstructure:"hash_alg"`
 	}
 
-	SyncConfig struct {
-		Repos map[string]RepoConfig `mapstructure:"repos"`
-	}
+	SyncConfig map[string]RepoConfig
 
 	SyncFlags struct {
 		RmAfter bool
@@ -80,12 +78,12 @@ type (
 	}
 
 	VerifyFlags struct {
-		After time.Time
-		Force bool
+		Before time.Time
+		Force  bool
 	}
 )
 
-func NewCensus(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
+func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
 	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
 	sha256sum := sha256stream.NewHasher(sha256stream.Config{})
 	algs := map[string]h2streamhash.Hasher{
@@ -132,8 +130,8 @@ func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (ce
 }
 
 func (c *Census) SyncRepos(ctx context.Context, flags SyncFlags) error {
-	names := make([]string, 0, len(c.cfg.Repos))
-	for k := range c.cfg.Repos {
+	names := make([]string, 0, len(c.cfg))
+	for k := range c.cfg {
 		names = append(names, k)
 	}
 	slices.Sort(names)
@@ -164,7 +162,7 @@ const (
 )
 
 func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (retErr error) {
-	cfg, ok := c.cfg.Repos[name]
+	cfg, ok := c.cfg[name]
 	if !ok {
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
@@ -354,8 +352,8 @@ func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, ex
 }
 
 func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
-	names := make([]string, 0, len(c.cfg.Repos))
-	for k := range c.cfg.Repos {
+	names := make([]string, 0, len(c.cfg))
+	for k := range c.cfg {
 		names = append(names, k)
 	}
 	slices.Sort(names)
@@ -371,7 +369,7 @@ func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
 }
 
 func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags) (retErr error) {
-	cfg, ok := c.cfg.Repos[name]
+	cfg, ok := c.cfg[name]
 	if !ok {
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
@@ -408,7 +406,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 			break
 		}
 		for _, i := range m {
-			if !flags.After.IsZero() && flags.After.After(time.UnixMilli(i.LastVerifiedAt)) {
+			if !flags.Before.IsZero() && flags.Before.After(time.UnixMilli(i.LastVerifiedAt)) {
 				c.log.Debug(ctx, "Skipping recently verified file", klog.AString("path", i.Name))
 				continue
 			}
@@ -507,7 +505,7 @@ type (
 )
 
 func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retErr error) {
-	if _, ok := c.cfg.Repos[name]; !ok {
+	if _, ok := c.cfg[name]; !ok {
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
@@ -552,7 +550,7 @@ func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retE
 }
 
 func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, override bool) (retErr error) {
-	if _, ok := c.cfg.Repos[name]; !ok {
+	if _, ok := c.cfg[name]; !ok {
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 

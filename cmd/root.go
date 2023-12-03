@@ -17,18 +17,27 @@ import (
 
 type (
 	Cmd struct {
-		rootCmd   *cobra.Command
-		log       *klog.LevelLogger
-		version   string
-		rootFlags rootFlags
-		docFlags  docFlags
+		rootCmd     *cobra.Command
+		log         *klog.LevelLogger
+		version     string
+		rootFlags   rootFlags
+		censusFlags censusFlags
+		docFlags    docFlags
 	}
 
 	rootFlags struct {
-		cfgFile    string
+		cfgFile  string
+		logLevel string
+		logJSON  bool
+	}
+
+	censusFlags struct {
 		stateDBDir string
-		logLevel   string
-		logJSON    bool
+		rmAfter    bool
+		force      bool
+		dryRun     bool
+		before     string
+		repo       string
 	}
 )
 
@@ -48,15 +57,15 @@ func (c *Cmd) Execute() {
 		DisableAutoGenTag: true,
 	}
 	rootCmd.PersistentFlags().StringVar(&c.rootFlags.cfgFile, "config", "", "config file (default is $XDG_CONFIG_HOME/bitcensus.json)")
-	rootCmd.PersistentFlags().StringVar(&c.rootFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
 	rootCmd.PersistentFlags().StringVar(&c.rootFlags.logLevel, "log-level", "info", "log level")
 	rootCmd.PersistentFlags().BoolVar(&c.rootFlags.logJSON, "log-json", false, "output json logs")
 
 	viper.SetDefault("statedbdir", getXDGDataDir())
-	viper.SetDefault("sync", census.SyncConfig{})
+	viper.SetDefault("repos", census.SyncConfig{})
 
 	c.rootCmd = rootCmd
 
+	c.addCensusCmds(rootCmd)
 	rootCmd.AddCommand(c.getDocCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -67,7 +76,7 @@ func (c *Cmd) Execute() {
 }
 
 func (c *Cmd) getStateDBDir() string {
-	dbdir := c.rootFlags.stateDBDir
+	dbdir := c.censusFlags.stateDBDir
 	if dbdir == "" {
 		dbdir = viper.GetString("statedbdir")
 		if dbdir == "" {

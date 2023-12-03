@@ -53,16 +53,14 @@ func TestCensus(t *testing.T) {
 
 	syncFiles()
 
-	census := NewCensus(klog.Discard{}, dataDir, SyncConfig{
-		Repos: map[string]RepoConfig{
-			"hello": {
-				Path: path.Join(storageDir, "hello"),
-				Dirs: []RepoDirConfig{
-					{
-						Exact: false,
-						Path:  "this",
-						Match: `.txt$`,
-					},
+	census := New(klog.Discard{}, dataDir, SyncConfig{
+		"hello": {
+			Path: path.Join(storageDir, "hello"),
+			Dirs: []RepoDirConfig{
+				{
+					Exact: false,
+					Path:  "this",
+					Match: `.txt$`,
 				},
 			},
 		},
@@ -161,19 +159,17 @@ func TestCensus(t *testing.T) {
 
 	{
 		// ensure compatibility with previous hash algs
-		census = NewCensus(klog.Discard{}, dataDir, SyncConfig{
-			Repos: map[string]RepoConfig{
-				"hello": {
-					Path: path.Join(storageDir, "hello"),
-					Dirs: []RepoDirConfig{
-						{
-							Exact: false,
-							Path:  "this",
-							Match: `.txt$`,
-						},
+		census = New(klog.Discard{}, dataDir, SyncConfig{
+			"hello": {
+				Path: path.Join(storageDir, "hello"),
+				Dirs: []RepoDirConfig{
+					{
+						Exact: false,
+						Path:  "this",
+						Match: `.txt$`,
 					},
-					HashAlg: sha256stream.HashID,
 				},
+				HashAlg: sha256stream.HashID,
 			},
 		})
 
@@ -189,19 +185,17 @@ func TestCensus(t *testing.T) {
 
 	{
 		// force verify will verify and update hash algs
-		census = NewCensus(klog.Discard{}, dataDir, SyncConfig{
-			Repos: map[string]RepoConfig{
-				"hello": {
-					Path: path.Join(storageDir, "hello"),
-					Dirs: []RepoDirConfig{
-						{
-							Exact: false,
-							Path:  "this",
-							Match: `.txt$`,
-						},
+		census = New(klog.Discard{}, dataDir, SyncConfig{
+			"hello": {
+				Path: path.Join(storageDir, "hello"),
+				Dirs: []RepoDirConfig{
+					{
+						Exact: false,
+						Path:  "this",
+						Match: `.txt$`,
 					},
-					HashAlg: sha256stream.HashID,
 				},
+				HashAlg: sha256stream.HashID,
 			},
 		})
 
