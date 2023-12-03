@@ -113,7 +113,6 @@ func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (ce
 	q := url.Values{}
 	q.Set("mode", mode)
 	dsn := fmt.Sprintf("file:%s?%s", filepath.FromSlash(u), q.Encode())
-	fmt.Println("dsn", dsn)
 	if err := os.MkdirAll(filepath.FromSlash(dir), 0o777); err != nil {
 		return nil, nil, kerrors.WithMsg(err, "Failed to mkdir for db")
 	}
@@ -354,7 +353,7 @@ func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, ex
 	return h.Sum(), nil
 }
 
-func (c *Census) VerifyRepos(ctx context.Context, name string, flags VerifyFlags) error {
+func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
 	names := make([]string, 0, len(c.cfg.Repos))
 	for k := range c.cfg.Repos {
 		names = append(names, k)
@@ -579,8 +578,7 @@ func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, overr
 		if entry.Name == "" {
 			return kerrors.WithMsg(err, "File entry missing name")
 		}
-		m, err := files.Get(ctx, entry.Name)
-		if err != nil {
+		if m, err := files.Get(ctx, entry.Name); err != nil {
 			if !errors.Is(err, dbsql.ErrNotFound) {
 				return kerrors.WithMsg(err, "Failed getting file from db")
 			}
