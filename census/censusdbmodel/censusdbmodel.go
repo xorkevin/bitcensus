@@ -114,16 +114,14 @@ func (r *repo) Insert(ctx context.Context, m *Model) error {
 }
 
 func (r *repo) Update(ctx context.Context, m *Model) error {
-	now := time.Now().Round(0).UnixMilli()
 	if err := r.fileTable.UpdfilePropsByName(ctx, r.db, &fileProps{
 		Size:           m.Size,
 		ModTime:        m.ModTime,
 		Hash:           m.Hash,
-		LastVerifiedAt: now,
+		LastVerifiedAt: m.LastVerifiedAt,
 	}, m.Name); err != nil {
 		return kerrors.WithMsg(err, "Failed to update file")
 	}
-	m.LastVerifiedAt = now
 	return nil
 }
 

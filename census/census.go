@@ -2,6 +2,7 @@ package census
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,7 @@ type (
 	Census struct {
 		log           *klog.LevelLogger
 		dataDir       string
+		cfg           SyncConfig
 		defaultHasher h2streamhash.Hasher
 		hashers       map[string]h2streamhash.Hasher
 		verifier      *h2streamhash.Verifier
@@ -81,7 +83,7 @@ type (
 	}
 )
 
-func NewCensus(log klog.Logger, dataDir string) *Census {
+func NewCensus(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
 	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
 	sha256sum := sha256stream.NewHasher(sha256stream.Config{})
 	algs := map[string]h2streamhash.Hasher{
@@ -94,25 +96,31 @@ func NewCensus(log klog.Logger, dataDir string) *Census {
 	return &Census{
 		log:           klog.NewLevelLogger(log),
 		dataDir:       dataDir,
+		cfg:           cfg,
 		defaultHasher: b2sum,
 		hashers:       algs,
 		verifier:      verifier,
 	}
 }
 
-func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (censusdbmodel.Repo, error) {
+func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (censusdbmodel.Repo, *dbsql.SQLClient, error) {
 	// url must be in the form of
 	// file:rel/path/to/file.db?optquery=value&otheroptquery=value
+	dir := path.Join(c.dataDir, "db")
 	u := url.URL{
 		Scheme: "file",
-		Opaque: path.Join(c.dataDir, "db", name+".db"),
+		Opaque: path.Join(dir, name+".db"),
 	}
 	q := u.Query()
 	q.Set("mode", mode)
 	u.RawQuery = q.Encode()
+	fmt.Println("url", u.String())
+	// if err := os.MkdirAll(filepath.FromSlash(dir), 0o777); err != nil {
+	// 	return nil, kerrors.WithMsg(err, "Failed to mkdir for db")
+	// }
 	d := dbsql.NewSQLClient(c.log.Logger.Sublogger("db"), u.String())
 	if err := d.Init(); err != nil {
-		return nil, kerrors.WithMsg(err, "Failed to init sqlite db client")
+		return nil, nil, kerrors.WithMsg(err, "Failed to init sqlite db client")
 	}
 
 	c.log.Info(context.Background(), "Using statedb",
@@ -122,18 +130,12 @@ func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (ce
 
 	files := censusdbmodel.New(d, "files")
 
-	if mode == "rw" {
-		if err := files.Setup(ctx); err != nil {
-			return nil, kerrors.WithMsg(err, "Failed setting up files table")
-		}
-	}
-
-	return files, nil
+	return files, d, nil
 }
 
-func (c *Census) SyncRepos(ctx context.Context, cfg SyncConfig, flags SyncFlags) error {
-	names := make([]string, 0, len(cfg.Repos))
-	for k := range cfg.Repos {
+func (c *Census) SyncRepos(ctx context.Context, flags SyncFlags) error {
+	names := make([]string, 0, len(c.cfg.Repos))
+	for k := range c.cfg.Repos {
 		names = append(names, k)
 	}
 	slices.Sort(names)
@@ -141,7 +143,7 @@ func (c *Census) SyncRepos(ctx context.Context, cfg SyncConfig, flags SyncFlags)
 	for _, k := range names {
 		repoctx := klog.CtxWithAttrs(ctx, klog.AString("repo", k))
 		c.log.Info(repoctx, "Syncing repo")
-		if err := c.SyncRepo(repoctx, k, cfg.Repos[k], flags); err != nil {
+		if err := c.SyncRepo(repoctx, k, flags); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed syncing repo %s", k))
 		}
 	}
@@ -163,15 +165,28 @@ const (
 	sqliteFileBatchSize = 32
 )
 
-func (c *Census) SyncRepo(ctx context.Context, name string, cfg RepoConfig, flags SyncFlags) error {
+func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (retErr error) {
+	cfg, ok := c.cfg.Repos[name]
+	if !ok {
+		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
+	}
+
 	hasher := c.defaultHasher
 	if cfg.HashAlg != "" {
 		hasher = c.hashers[cfg.HashAlg]
 	}
 
-	files, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(ctx, name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close sql client"))
+		}
+	}()
+	if err := files.Setup(ctx); err != nil {
+		return kerrors.WithMsg(err, "Failed setting up files table")
 	}
 
 	for _, i := range cfg.Dirs {
@@ -344,9 +359,9 @@ func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, ex
 	return h.Sum(), nil
 }
 
-func (c *Census) VerifyRepos(ctx context.Context, name string, cfg SyncConfig, flags VerifyFlags) error {
-	names := make([]string, 0, len(cfg.Repos))
-	for k := range cfg.Repos {
+func (c *Census) VerifyRepos(ctx context.Context, name string, flags VerifyFlags) error {
+	names := make([]string, 0, len(c.cfg.Repos))
+	for k := range c.cfg.Repos {
 		names = append(names, k)
 	}
 	slices.Sort(names)
@@ -354,22 +369,35 @@ func (c *Census) VerifyRepos(ctx context.Context, name string, cfg SyncConfig, f
 	for _, k := range names {
 		repoctx := klog.CtxWithAttrs(ctx, klog.AString("repo", k))
 		c.log.Info(repoctx, "Verifying repo")
-		if err := c.VerifyRepo(repoctx, k, cfg.Repos[k], flags); err != nil {
+		if err := c.VerifyRepo(repoctx, k, flags); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed verifying repo %s", k))
 		}
 	}
 	return nil
 }
 
-func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, flags VerifyFlags) error {
+func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags) (retErr error) {
+	cfg, ok := c.cfg.Repos[name]
+	if !ok {
+		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
+	}
+
 	hasher := c.defaultHasher
 	if cfg.HashAlg != "" {
 		hasher = c.hashers[cfg.HashAlg]
 	}
 
-	files, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(ctx, name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close sql client"))
+		}
+	}()
+	if err := files.Setup(ctx); err != nil {
+		return kerrors.WithMsg(err, "Failed setting up files table")
 	}
 
 	var mismatch []string
@@ -387,6 +415,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 		}
 		for _, i := range m {
 			if !flags.After.IsZero() && flags.After.After(time.UnixMilli(i.LastVerifiedAt)) {
+				c.log.Debug(ctx, "Skipping recently verified file", klog.AString("path", i.Name))
 				continue
 			}
 
@@ -405,7 +434,9 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, cfg RepoConfig, fl
 				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), h)); err != nil {
 					return kerrors.WithMsg(err, "Failed updating file entry")
 				}
+				c.log.Info(ctx, "Verified file", klog.AString("path", i.Name))
 			} else {
+				c.log.Warn(ctx, "Checksum mismatch", klog.AString("path", i.Name))
 				mismatch = append(mismatch, i.Name)
 			}
 		}
@@ -469,5 +500,115 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 	if _, err := io.Copy(dest, f); err != nil {
 		return kerrors.WithMsg(err, "Failed reading file")
 	}
+	return nil
+}
+
+type (
+	FileEntry struct {
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		ModTime  int64  `json:"mod_time"`
+		Checksum string `json:"checksum"`
+	}
+)
+
+func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retErr error) {
+	if _, ok := c.cfg.Repos[name]; !ok {
+		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
+	}
+
+	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	if err != nil {
+		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close sql client"))
+		}
+	}()
+	if err := files.Setup(ctx); err != nil {
+		return kerrors.WithMsg(err, "Failed setting up files table")
+	}
+
+	j := json.NewEncoder(w)
+
+	cursor := ""
+	for {
+		m, err := files.List(ctx, sqliteFileBatchSize, cursor)
+		if err != nil {
+			return kerrors.WithMsg(err, "Failed to list db files")
+		}
+		if len(m) == 0 {
+			break
+		}
+		for _, i := range m {
+			if err := j.Encode(FileEntry{
+				Name:     i.Name,
+				Size:     i.Size,
+				ModTime:  i.ModTime,
+				Checksum: i.Hash,
+			}); err != nil {
+				return kerrors.WithMsg(err, "Failed encoding file entry")
+			}
+		}
+		if len(m) < sqliteFileBatchSize {
+			break
+		}
+		cursor = m[len(m)-1].Name
+	}
+
+	return nil
+}
+
+func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, override bool) (retErr error) {
+	if _, ok := c.cfg.Repos[name]; !ok {
+		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
+	}
+
+	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	if err != nil {
+		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close sql client"))
+		}
+	}()
+	if err := files.Setup(ctx); err != nil {
+		return kerrors.WithMsg(err, "Failed setting up files table")
+	}
+
+	j := json.NewDecoder(r)
+	for j.More() {
+		var entry FileEntry
+		if err := j.Decode(&entry); err != nil {
+			return kerrors.WithMsg(err, "Malformed file entry")
+		}
+		if entry.Name == "" {
+			return kerrors.WithMsg(err, "File entry missing name")
+		}
+		m, err := files.Get(ctx, entry.Name)
+		if err != nil {
+			if !errors.Is(err, dbsql.ErrNotFound) {
+				return kerrors.WithMsg(err, "Failed getting file from db")
+			}
+			m = files.New(entry.Name, entry.Size, entry.ModTime, entry.Checksum)
+			m.LastVerifiedAt = 0
+			if err := files.Insert(ctx, m); err != nil {
+				return kerrors.WithMsg(err, "Failed adding file entry")
+			}
+		} else {
+			if override {
+				m.Size = entry.Size
+				m.ModTime = entry.ModTime
+				m.Hash = entry.Checksum
+				m.LastVerifiedAt = 0
+				if err := files.Update(ctx, m); err != nil {
+					return kerrors.WithMsg(err, "Failed updating file entry")
+				}
+			}
+		}
+	}
+
 	return nil
 }
