@@ -204,10 +204,18 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 	for _, i := range cfg.Dirs {
 		p := path.Clean(i.Path)
 		if i.Exact {
+			c.log.Debug(ctx, "Adding repo file",
+				klog.AString("repopath", cfg.Path),
+				klog.AString("repofilepath", p),
+			)
 			if err := c.syncRepoFileFS(ctx, files, hasher, rootDir, p, flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
+			c.log.Debug(ctx, "Exploring repo dir",
+				klog.AString("repopath", cfg.Path),
+				klog.AString("repodirpath", p),
+			)
 			r, err := regexp.Compile(i.Match)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Invalid match regex for dir %s", p))
@@ -237,12 +245,13 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 					if !errors.Is(err, fs.ErrNotExist) {
 						return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat file %s", i.Name))
 					}
+					c.log.Info(ctx, "Deleting file entry", klog.AString("path", i.Name))
 					if !flags.DryRun {
 						if err := files.Delete(ctx, i.Name); err != nil {
 							return kerrors.WithMsg(err, fmt.Sprintf("Failed deleting file entry %s", i.Name))
 						}
+						c.log.Info(ctx, "Deleted file entry", klog.AString("path", i.Name))
 					}
-					c.log.Info(ctx, "Deleted file", klog.AString("path", i.Name))
 				}
 			}
 			if len(m) < sqliteFileBatchSize {
