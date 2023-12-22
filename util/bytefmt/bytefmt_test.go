@@ -18,7 +18,7 @@ func TestToString(t *testing.T) {
 			Bytes: 1234,
 		},
 		{
-			Human: "117.74KiB",
+			Human: "117.74MiB",
 			Bytes: 123456789,
 		},
 	} {
