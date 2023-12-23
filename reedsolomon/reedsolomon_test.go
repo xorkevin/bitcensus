@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	gf8Order         = 256
+	gf8Order         = 1 << 8
 	gf8MulGroupOrder = gf8Order - 1
 )
 
@@ -19,7 +19,10 @@ type (
 )
 
 func newGF8Field(poly, a int) *gf8Field {
-	poly = poly | 0x100
+	if poly >= gf8Order {
+		panic("Invalid generator poly")
+	}
+	poly |= gf8Order
 	f := &gf8Field{}
 	x := 1
 	// a^255 is 1
@@ -34,7 +37,7 @@ func newGF8Field(poly, a int) *gf8Field {
 }
 
 func (f *gf8Field) Exp(x byte) byte {
-	return f.exp[x%gf8MulGroupOrder]
+	return f.exp[x]
 }
 
 func (f *gf8Field) Log(x byte) byte {
@@ -54,7 +57,7 @@ func (f *gf8Field) Mul(x, y byte) byte {
 
 func (f *gf8Field) Inv(x byte) byte {
 	if x == 0 {
-		return 0
+		return gf8MulGroupOrder
 	}
 	return f.exp[gf8MulGroupOrder-f.log[x]]
 }
@@ -67,7 +70,7 @@ func mul(x, y, poly int) int {
 		}
 		y >>= 1
 		x <<= 1
-		if x&0x100 != 0 {
+		if x&gf8Order != 0 {
 			x ^= poly
 		}
 	}
@@ -99,6 +102,22 @@ func TestReedSolomon(t *testing.T) {
 		{
 			inp: 4,
 			out: 2,
+		},
+		{
+			inp: 5,
+			out: 50,
+		},
+		{
+			inp: 6,
+			out: 26,
+		},
+		{
+			inp: 7,
+			out: 198,
+		},
+		{
+			inp: 8,
+			out: 3,
 		},
 	} {
 		assert.Equal(tc.out, f.Log(tc.inp))
