@@ -254,6 +254,15 @@ func TestReedSolomon(t *testing.T) {
 	assert.NoError(err)
 	code, err := matMultiply(f, matrix, inverse)
 	assert.NoError(err)
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			if i == j {
+				assert.Equal(byte(1), code[i][j], "%d,%d", i, j)
+			} else {
+				assert.Equal(byte(0), code[i][j], "%d,%d", i, j)
+			}
+		}
+	}
 	for _, tc := range []struct {
 		i, j int
 		v    byte
@@ -301,4 +310,23 @@ func TestReedSolomon(t *testing.T) {
 	} {
 		assert.Equal(tc.v, code[4+tc.i][tc.j])
 	}
+
+	data := []byte("Hello, world")
+	data0 := data[:4]
+	data1 := data[4:8]
+	data2 := data[8:]
+	data3 := []byte{0, 0, 0, 0}
+	parity, err := matMultiply(f, code[4:], [][]byte{data0, data1, data2, data3})
+	assert.NoError(err)
+
+	enc, err := NewVandermondeEncoder(4, 2)
+	assert.NoError(err)
+
+	targetParity := [][]byte{
+		{0, 0, 0, 0},
+		{0, 0, 0, 0},
+	}
+	assert.NoError(enc.Encode([][]byte{data0, data1, data2, data3}, targetParity))
+
+	assert.Equal(targetParity, parity)
 }

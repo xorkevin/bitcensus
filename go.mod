@@ -3,6 +3,7 @@ module xorkevin.dev/bitcensus
 go 1.21.4
 
 require (
+	github.com/klauspost/reedsolomon v1.12.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.17.0
 	github.com/stretchr/testify v1.8.4
