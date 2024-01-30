@@ -8,7 +8,7 @@ import (
 	"xorkevin.dev/kerrors"
 )
 
-//go:generate forge model
+//go:generate forge model --placeholder-prefix=?
 
 type (
 	// Repo is a content tree repository
