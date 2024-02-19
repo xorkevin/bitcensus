@@ -11,6 +11,8 @@ func TestCensus(t *testing.T) {
 
 	assert := require.New(t)
 
+	assert.Len([]byte(MagicBytes), 8)
+
 	header := PacketHeader{
 		Version:    0,
 		PacketHash: [32]byte{0, 1, 2, 3, 4, 5, 6, 7},

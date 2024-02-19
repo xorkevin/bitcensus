@@ -38,7 +38,7 @@ type (
 	}
 )
 
-const MagicBytes = "bcsp\x0d\x0a\x1a\x04"
+const MagicBytes = "\xd5\x66\x67\x80\x0d\x0a\x1a\x04"
 
 func (h *PacketHeader) MarshalBinary() ([]byte, error) {
 	res := make([]byte, 60)
