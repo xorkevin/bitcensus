@@ -57,8 +57,11 @@ func TestWritePacket(t *testing.T) {
 
 	packetfile := filepath.Join(tmpDir, "packetfile.bcp")
 
-	testMessage := `{"hello":"world"}`
-	testMessage2 := `{"second":"hello"}`
+	packetPayloads := []string{
+		`{"hello":"world"}`,
+		`{"second":"hello"}`,
+		`{"and":"third"}`,
+	}
 	assert.NoError(func() (retErr error) {
 		f, err := os.Create(packetfile)
 		if err != nil {
@@ -69,11 +72,10 @@ func TestWritePacket(t *testing.T) {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
-		if err := WritePacket(f, PacketKindIndex, strings.NewReader(testMessage)); err != nil {
-			return err
-		}
-		if err := WritePacket(f, PacketKindIndex, strings.NewReader(testMessage2)); err != nil {
-			return err
+		for _, i := range packetPayloads {
+			if err := WritePacket(f, PacketKindIndex, strings.NewReader(i)); err != nil {
+				return err
+			}
 		}
 		return nil
 	}())
@@ -96,17 +98,22 @@ func TestWritePacket(t *testing.T) {
 	}()
 	assert.NoError(err)
 
-	var header PacketHeader
-	assert.NoError(header.UnmarshalBinary(buf))
-	assert.NoError(header.Verify())
-	assert.Equal(uint32(PacketVersion), header.Version)
-	assert.Equal(uint64(len(testMessage)), header.Length)
-	assert.Equal(PacketKindIndex, header.Kind)
-	assert.Equal(testMessage, string(buf[headerSize:headerSize+int(header.Length)]))
-	var trailer [16]byte
-	binary.BigEndian.PutUint32(trailer[:], header.Version)
-	binary.LittleEndian.PutUint64(trailer[4:], header.Length)
-	binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
-	padding := make([]byte, 64-header.Length%64)
-	assert.Equal(blake3.Sum256(append(append([]byte(testMessage), padding...), trailer[:]...)), header.PacketHash)
+	for _, i := range packetPayloads {
+		var header PacketHeader
+		assert.NoError(header.UnmarshalBinary(buf))
+		assert.NoError(header.Verify())
+		assert.Equal(uint32(PacketVersion), header.Version)
+		assert.Equal(uint64(len(i)), header.Length)
+		assert.Equal(PacketKindIndex, header.Kind)
+		assert.True(len(buf) >= headerSize+int(header.Length))
+		assert.Equal(i, string(buf[headerSize:headerSize+int(header.Length)]))
+		var trailer [16]byte
+		binary.BigEndian.PutUint32(trailer[:], header.Version)
+		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
+		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
+		padding := make([]byte, 64-header.Length%64)
+		assert.Equal(blake3.Sum256(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
+		buf = buf[headerSize+int(header.Length):]
+	}
+	assert.Len(buf, 0)
 }
