@@ -43,6 +43,7 @@ prepare: fmt vet ## Prepare code for PR
 ## CODEGEN
 
 GENSRC=$(shell find . -name '*_gen.go')
+GENPB=$(shell find . -name '*.pb.go')
 
 .PHONY: generate gen cleangen
 
@@ -52,4 +53,4 @@ generate: ## Run go generate
 gen: generate fmt ## Run codegen
 
 cleangen: ## Remove generated code
-	rm $(GENSRC)
+	rm $(GENSRC) $(GENPB)
