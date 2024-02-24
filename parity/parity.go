@@ -3,10 +3,11 @@ package parity
 import (
 	"bytes"
 	"encoding/binary"
+	"hash"
 	"hash/crc32"
 	"io"
 
-	"github.com/zeebo/blake3"
+	"golang.org/x/crypto/blake2b"
 	"xorkevin.dev/kerrors"
 )
 
@@ -121,7 +122,7 @@ func (h *PacketHeader) SetSum() {
 
 type (
 	packetHasher struct {
-		b3sum *blake3.Hasher
+		h     hash.Hash
 		count uint64
 		w     io.Writer
 	}
@@ -131,7 +132,7 @@ func (h *packetHasher) Write(src []byte) (int, error) {
 	if n, err := h.w.Write(src); err != nil {
 		return n, err
 	}
-	n, err := h.b3sum.Write(src)
+	n, err := h.h.Write(src)
 	if err != nil {
 		// should not happen as specified by [hash.Hash]
 		return n, kerrors.WithMsg(err, "Failed writing to hasher")
@@ -144,21 +145,29 @@ func (h *packetHasher) Write(src []byte) (int, error) {
 	return n, nil
 }
 
+const (
+	hashBlockSize = 128
+)
+
 var (
 	placeholderHeader = [headerSize]byte{}
-	zeroBuf           = [64]byte{}
+	hashBlockZeroBuf  = [hashBlockSize]byte{}
 )
 
 func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) error {
 	if _, err := w.Write(placeholderHeader[:]); err != nil {
 		return kerrors.WithMsg(err, "Failed to write placeholder packet header")
 	}
+	h, err := blake2b.New256(nil)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed to create packet hash")
+	}
 	header := PacketHeader{
 		Version: PacketVersion,
 		Kind:    kind,
 	}
 	hasher := packetHasher{
-		b3sum: blake3.New(),
+		h:     h,
 		count: 0,
 		w:     w,
 	}
@@ -171,10 +180,10 @@ func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) error {
 	}
 	header.Length = hasher.count
 	{
-		if n := header.Length % 64; n != 0 {
-			// pad length to 64 bytes
-			l := 64 - n
-			if k, err := hasher.b3sum.Write(zeroBuf[:l]); err != nil {
+		if n := header.Length % hashBlockSize; n != 0 {
+			// pad length to hashBlockSize bytes
+			l := hashBlockSize - n
+			if k, err := hasher.h.Write(hashBlockZeroBuf[:l]); err != nil {
 				// should not happen as specified by [hash.Hash]
 				return kerrors.WithMsg(err, "Failed to write padding to packet hash")
 			} else if k != int(l) {
@@ -186,12 +195,12 @@ func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) error {
 		binary.BigEndian.PutUint32(buf[:], header.Version)
 		binary.LittleEndian.PutUint64(buf[4:], header.Length)
 		binary.BigEndian.PutUint32(buf[12:], uint32(header.Kind))
-		if _, err := hasher.b3sum.Write(buf[:]); err != nil {
+		if _, err := hasher.h.Write(buf[:]); err != nil {
 			// should not happen as specified by [hash.Hash]
 			return kerrors.WithMsg(err, "Failed to write trailer to packet hash")
 		}
 	}
-	copy(header.PacketHash[:], hasher.b3sum.Sum(nil))
+	copy(header.PacketHash[:], hasher.h.Sum(nil))
 	headerBytes, err := header.MarshalBinary()
 	if err != nil {
 		return kerrors.WithMsg(err, "Failed to marshal packet header")

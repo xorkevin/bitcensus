@@ -86,23 +86,23 @@ type (
 )
 
 func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
-	b3sum := blake3stream.NewHasher(blake3stream.Config{})
-	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
 	sha256sum := sha256stream.NewHasher(sha256stream.Config{})
+	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
+	b3sum := blake3stream.NewHasher(blake3stream.Config{})
 	algs := map[string]h2streamhash.Hasher{
-		b3sum.ID():     b3sum,
-		b2sum.ID():     b2sum,
 		sha256sum.ID(): sha256sum,
+		b2sum.ID():     b2sum,
+		b3sum.ID():     b3sum,
 	}
 	verifier := h2streamhash.NewVerifier()
-	verifier.Register(b3sum)
-	verifier.Register(b2sum)
 	verifier.Register(sha256sum)
+	verifier.Register(b2sum)
+	verifier.Register(b3sum)
 	return &Census{
 		log:           klog.NewLevelLogger(log),
 		dataDir:       dataDir,
 		cfg:           cfg,
-		defaultHasher: b3sum,
+		defaultHasher: b2sum,
 		hashers:       algs,
 		verifier:      verifier,
 	}

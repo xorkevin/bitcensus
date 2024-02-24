@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zeebo/blake3"
+	"golang.org/x/crypto/blake2b"
 )
 
 func TestPacketHeader(t *testing.T) {
@@ -21,7 +21,6 @@ func TestPacketHeader(t *testing.T) {
 
 	assert.Len([]byte(MagicBytes), 8)
 	assert.Equal(headerVersionOffset, len([]byte(MagicBytes)))
-	assert.Len(blake3.New().Sum(nil), HeaderHashSize)
 	assert.Equal(headerSumOffset, headerVersionOffset+4)
 	assert.Equal(headerHashOffset, headerSumOffset+4)
 	assert.Equal(headerLengthOffset, headerHashOffset+HeaderHashSize)
@@ -111,8 +110,8 @@ func TestWritePacket(t *testing.T) {
 		binary.BigEndian.PutUint32(trailer[:], header.Version)
 		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
 		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
-		padding := make([]byte, 64-header.Length%64)
-		assert.Equal(blake3.Sum256(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
+		padding := make([]byte, 128-header.Length%128)
+		assert.Equal(blake2b.Sum256(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 		buf = buf[headerSize+int(header.Length):]
 	}
 	assert.Len(buf, 0)

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"xorkevin.dev/hunter2/h2streamhash/blake3stream"
+	"xorkevin.dev/hunter2/h2streamhash/blake2bstream"
 	"xorkevin.dev/hunter2/h2streamhash/sha256stream"
 	"xorkevin.dev/klog"
 )
@@ -91,7 +91,7 @@ func TestCensus(t *testing.T) {
 	{
 		// sync and check export
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
@@ -120,14 +120,14 @@ func TestCensus(t *testing.T) {
 	{
 		// a re-sync should cause verify to pass again
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
 	{
 		// a re-sync should not change anything if no changes made
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
@@ -141,7 +141,7 @@ func TestCensus(t *testing.T) {
 		assert.NoError(os.Chtimes(name, time.Now(), info.ModTime()))
 
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		var cerr *ChecksumError
 		assert.ErrorAs(census.VerifyRepos(context.Background(), VerifyFlags{}), &cerr)
 		assert.Equal("hello", cerr.Repo)
@@ -153,7 +153,7 @@ func TestCensus(t *testing.T) {
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
 			Force: true,
 		}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
@@ -176,7 +176,7 @@ func TestCensus(t *testing.T) {
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
 			Force: true,
 		}))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
@@ -214,7 +214,7 @@ func TestCensus(t *testing.T) {
 		dbImport.Reset(dbExport.Bytes())
 
 		assert.NoError(census.ImportRepo(context.Background(), dbImport, "hello", true))
-		checkRepoExport(t, blake3stream.HashID)
+		checkRepoExport(t, blake2bstream.HashID)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
 
