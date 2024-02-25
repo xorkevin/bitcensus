@@ -102,7 +102,7 @@ func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
 		log:           klog.NewLevelLogger(log),
 		dataDir:       dataDir,
 		cfg:           cfg,
-		defaultHasher: b2sum,
+		defaultHasher: b3sum,
 		hashers:       algs,
 		verifier:      verifier,
 	}

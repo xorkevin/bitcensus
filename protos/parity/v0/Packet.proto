@@ -4,10 +4,22 @@ package xorkevin.bitcensus.parity.v0;
 option go_package = "xorkevin.dev/bitcensus/pb/parityv0";
 
 message IndexPacket {
+  InputFile input_file = 1;
+  ShardConfig shard_config = 2;
+}
+
+message InputFile {
+  string hash = 1;
+  uint64 size = 2;
+}
+
+message ShardConfig {
   uint64 block_size = 1;
-  uint64 shard_count = 2;
-  uint64 recovery_shard_count = 3;
-  string code_matrix_kind = 4;
-  string input_file_hash = 5;
-  uint64 input_file_size = 6;
+  uint64 count = 2;
+  uint64 recovery_count = 3;
+  CodeMatrixConfig code_matrix_config = 4;
+}
+
+message CodeMatrixConfig {
+  string code_matrix_kind = 1;
 }
