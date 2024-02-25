@@ -6,7 +6,7 @@ option go_package = "xorkevin.dev/bitcensus/pb/parityv0";
 message IndexPacket {
   InputFile input_file = 1;
   ShardConfig shard_config = 2;
-  repeated InputBlock input_blocks = 3;
+  BlockSet block_set = 3;
 }
 
 message InputFile {
@@ -25,7 +25,11 @@ message CodeMatrixConfig {
   string code_matrix_kind = 1;
 }
 
-message InputBlock {
-  uint64 index = 1;
-  string hash = 2;
+message BlockSet {
+  repeated Block input = 1;
+  repeated Block parity = 2;
+}
+
+message Block {
+  string hash = 1;
 }
