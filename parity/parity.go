@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"golang.org/x/crypto/blake2b"
+	"xorkevin.dev/bitcensus/pb/parityv0"
 	"xorkevin.dev/kerrors"
 )
 
@@ -16,11 +17,14 @@ var (
 	ErrShortHeader errShortHeader
 	// ErrMalformedHeader is returned when the header is malformed
 	ErrMalformedHeader errHeader
+	// ErrConfig is returned when the parity config is invalid
+	ErrConfig errConfig
 )
 
 type (
 	errShortHeader struct{}
 	errHeader      struct{}
+	errConfig      struct{}
 )
 
 func (e errShortHeader) Error() string {
@@ -29,6 +33,10 @@ func (e errShortHeader) Error() string {
 
 func (e errHeader) Error() string {
 	return "Malformed header"
+}
+
+func (e errConfig) Error() string {
+	return "Invalid config"
 }
 
 type (
@@ -212,4 +220,42 @@ func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) error {
 		return kerrors.WithMsg(err, "Failed to seek written packet")
 	}
 	return nil
+}
+
+type (
+	blockLayout struct {
+		FileSize           uint64
+		BlockSize          uint64
+		NumBlocks          uint64
+		LastBlockSize      uint64
+		ShardCount         uint64
+		ShardStride        uint64
+		NumLastShardBlocks uint64
+	}
+)
+
+func partitionBlocks(pkt *parityv0.IndexPacket) (*blockLayout, error) {
+	cfg := pkt.GetShardConfig()
+	layout := blockLayout{
+		FileSize:   pkt.GetInputFile().GetSize(),
+		BlockSize:  cfg.GetBlockSize(),
+		ShardCount: cfg.GetCount(),
+	}
+	if layout.FileSize == 0 {
+		return nil, kerrors.WithKind(nil, ErrConfig, "Empty file")
+	}
+	if layout.BlockSize == 0 {
+		return nil, kerrors.WithKind(nil, ErrConfig, "Invalid block size")
+	}
+	if layout.ShardCount == 0 {
+		return nil, kerrors.WithKind(nil, ErrConfig, "Invalid shard count")
+	}
+	layout.NumBlocks = (layout.FileSize + layout.BlockSize - 1) / layout.BlockSize
+	layout.LastBlockSize = layout.FileSize - layout.BlockSize*(layout.NumBlocks-1)
+	layout.ShardStride = (layout.NumBlocks + layout.ShardCount - 1) / layout.ShardCount
+	// shard count must be recomputed since shard stride may cause some shards to
+	// be empty
+	layout.ShardCount = (layout.NumBlocks + layout.ShardStride - 1) / layout.ShardStride
+	layout.NumLastShardBlocks = layout.NumBlocks - layout.ShardStride*(layout.ShardCount-1)
+	return &layout, nil
 }
