@@ -10,7 +10,7 @@ message IndexPacket {
 }
 
 message InputFile {
-  string hash = 1;
+  bytes hash = 1;
   uint64 size = 2;
 }
 
@@ -31,5 +31,5 @@ message BlockSet {
 }
 
 message Block {
-  string hash = 1;
+  bytes hash = 1;
 }
