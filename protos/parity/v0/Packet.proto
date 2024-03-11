@@ -17,7 +17,7 @@ message InputFile {
 message ShardConfig {
   uint64 block_size = 1;
   uint64 count = 2;
-  uint64 recovery_count = 3;
+  uint64 parity_count = 3;
   CodeMatrixConfig code_matrix_config = 4;
 }
 

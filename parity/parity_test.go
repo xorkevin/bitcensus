@@ -61,23 +61,26 @@ func TestWritePacket(t *testing.T) {
 		`{"second":"hello"}`,
 		`{"and":"third"}`,
 	}
-	assert.NoError(func() (retErr error) {
+	packetHashes, err := func(packetPayloads []string) (_ [][HeaderHashSize]byte, retErr error) {
 		f, err := os.Create(packetfile)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer func() {
 			if err := f.Close(); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
+		packetHashes := make([][HeaderHashSize]byte, 0, len(packetPayloads))
 		for _, i := range packetPayloads {
-			if err := WritePacket(f, PacketKindIndex, strings.NewReader(i)); err != nil {
-				return err
+			h, err := WritePacket(f, PacketKindIndex, strings.NewReader(i))
+			if err != nil {
+				return nil, err
 			}
+			packetHashes = append(packetHashes, h)
 		}
-		return nil
-	}())
+		return packetHashes, nil
+	}(packetPayloads)
 
 	buf, err := func() (_ []byte, retErr error) {
 		f, err := os.Open(packetfile)
@@ -97,7 +100,7 @@ func TestWritePacket(t *testing.T) {
 	}()
 	assert.NoError(err)
 
-	for _, i := range packetPayloads {
+	for n, i := range packetPayloads {
 		var header PacketHeader
 		assert.NoError(header.UnmarshalBinary(buf))
 		assert.NoError(header.Verify())
@@ -106,6 +109,7 @@ func TestWritePacket(t *testing.T) {
 		assert.Equal(PacketKindIndex, header.Kind)
 		assert.True(len(buf) >= headerSize+int(header.Length))
 		assert.Equal(i, string(buf[headerSize:headerSize+int(header.Length)]))
+		assert.Equal(packetHashes[n], header.PacketHash)
 		var trailer [16]byte
 		binary.BigEndian.PutUint32(trailer[:], header.Version)
 		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
@@ -123,15 +127,17 @@ func TestPartitionBlocks(t *testing.T) {
 	assert := require.New(t)
 
 	for _, tc := range []struct {
-		fileSize   uint64
-		blockSize  uint64
-		shardCount uint64
-		exp        *blockLayout
+		fileSize uint64
+		cfg      ShardConfig
+		exp      *blockLayout
 	}{
 		{
-			fileSize:   32,
-			blockSize:  5,
-			shardCount: 5,
+			fileSize: 32,
+			cfg: ShardConfig{
+				BlockSize:        5,
+				ShardCount:       5,
+				ParityShardCount: 2,
+			},
 			exp: &blockLayout{
 				FileSize:           32,
 				BlockSize:          5,
@@ -140,13 +146,18 @@ func TestPartitionBlocks(t *testing.T) {
 				ShardCount:         4,
 				ShardStride:        2,
 				NumLastShardBlocks: 1,
+				ParityShardCount:   2,
 			},
 		},
 	} {
-		layout, err := partitionBlocks(tc.fileSize, tc.blockSize, tc.shardCount)
+		layout, err := partitionBlocks(tc.fileSize, tc.cfg)
 		assert.NoError(err)
 		assert.Equal(tc.exp, layout)
-		layout2, err := partitionBlocks(layout.FileSize, layout.BlockSize, layout.ShardCount)
+		layout2, err := partitionBlocks(layout.FileSize, ShardConfig{
+			BlockSize:        layout.BlockSize,
+			ShardCount:       layout.ShardCount,
+			ParityShardCount: layout.ParityShardCount,
+		})
 		assert.NoError(err)
 		assert.Equal(tc.exp, layout2)
 	}
