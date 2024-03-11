@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/blake2b"
-	"xorkevin.dev/bitcensus/pb/parityv0"
 )
 
 func TestPacketHeader(t *testing.T) {
@@ -124,19 +123,15 @@ func TestPartitionBlocks(t *testing.T) {
 	assert := require.New(t)
 
 	for _, tc := range []struct {
-		pkt *parityv0.IndexPacket
-		exp *blockLayout
+		fileSize   uint64
+		blockSize  uint64
+		shardCount uint64
+		exp        *blockLayout
 	}{
 		{
-			pkt: &parityv0.IndexPacket{
-				InputFile: &parityv0.InputFile{
-					Size: 32,
-				},
-				ShardConfig: &parityv0.ShardConfig{
-					BlockSize: 5,
-					Count:     5,
-				},
-			},
+			fileSize:   32,
+			blockSize:  5,
+			shardCount: 5,
 			exp: &blockLayout{
 				FileSize:           32,
 				BlockSize:          5,
@@ -148,8 +143,11 @@ func TestPartitionBlocks(t *testing.T) {
 			},
 		},
 	} {
-		layout, err := partitionBlocks(tc.pkt)
+		layout, err := partitionBlocks(tc.fileSize, tc.blockSize, tc.shardCount)
 		assert.NoError(err)
 		assert.Equal(tc.exp, layout)
+		layout2, err := partitionBlocks(layout.FileSize, layout.BlockSize, layout.ShardCount)
+		assert.NoError(err)
+		assert.Equal(tc.exp, layout2)
 	}
 }

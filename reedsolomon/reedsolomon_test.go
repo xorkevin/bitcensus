@@ -27,7 +27,7 @@ func newGF8Field(poly, a int) *gf8Field {
 	f := &gf8Field{}
 	x := 1
 	// a^255 is 1
-	for i := 0; i < gf8MulGroupOrder; i++ {
+	for i := range gf8MulGroupOrder {
 		f.exp[i] = byte(x)
 		f.exp[i+gf8MulGroupOrder] = byte(x)
 		f.log[x] = byte(i)
@@ -159,10 +159,10 @@ func gaussianEliminate(field *gf8Field, matrix [][]byte) error {
 		}
 	}
 	for k := range matrix {
-		for i := 0; i < k; i++ {
+		for i := range k {
 			if v := matrix[i][k]; v != 0 {
 				matrix[i][k] = 0
-				for j := 0; j < n; j++ {
+				for j := range n {
 					matrix[i][j] = field.Add(matrix[i][j], field.Mul(v, matrix[k][j]))
 				}
 			}
@@ -254,8 +254,8 @@ func TestReedSolomon(t *testing.T) {
 	assert.NoError(err)
 	code, err := matMultiply(f, matrix, inverse)
 	assert.NoError(err)
-	for i := 0; i < 4; i++ {
-		for j := 0; j < 4; j++ {
+	for i := range 4 {
+		for j := range 4 {
 			if i == j {
 				assert.Equal(byte(1), code[i][j], "%d,%d", i, j)
 			} else {

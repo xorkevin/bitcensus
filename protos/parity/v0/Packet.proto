@@ -22,7 +22,7 @@ message ShardConfig {
 }
 
 message CodeMatrixConfig {
-  string code_matrix_kind = 1;
+  string kind = 1;
 }
 
 message BlockSet {

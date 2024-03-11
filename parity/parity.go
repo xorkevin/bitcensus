@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"golang.org/x/crypto/blake2b"
+	"google.golang.org/protobuf/proto"
 	"xorkevin.dev/bitcensus/pb/parityv0"
 	"xorkevin.dev/kerrors"
 )
@@ -45,6 +46,14 @@ type (
 
 const (
 	PacketKindIndex PacketKind = 1
+)
+
+type (
+	CodeMatrixKind string
+)
+
+const (
+	CodeMatrixKindVandermonde CodeMatrixKind = "vndr"
 )
 
 type (
@@ -223,6 +232,12 @@ func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) error {
 }
 
 type (
+	ShardConfig struct {
+		BlockSize          uint64
+		ShardCount         uint64
+		RecoveryShardCount uint64
+	}
+
 	blockLayout struct {
 		FileSize           uint64
 		BlockSize          uint64
@@ -234,12 +249,11 @@ type (
 	}
 )
 
-func partitionBlocks(pkt *parityv0.IndexPacket) (*blockLayout, error) {
-	cfg := pkt.GetShardConfig()
+func partitionBlocks(fileSize, blockSize, shardCount uint64) (*blockLayout, error) {
 	layout := blockLayout{
-		FileSize:   pkt.GetInputFile().GetSize(),
-		BlockSize:  cfg.GetBlockSize(),
-		ShardCount: cfg.GetCount(),
+		FileSize:   fileSize,
+		BlockSize:  blockSize,
+		ShardCount: shardCount,
 	}
 	if layout.FileSize == 0 {
 		return nil, kerrors.WithKind(nil, ErrConfig, "Empty file")
@@ -258,4 +272,64 @@ func partitionBlocks(pkt *parityv0.IndexPacket) (*blockLayout, error) {
 	layout.ShardCount = (layout.NumBlocks + layout.ShardStride - 1) / layout.ShardStride
 	layout.NumLastShardBlocks = layout.NumBlocks - layout.ShardStride*(layout.ShardCount-1)
 	return &layout, nil
+}
+
+func initIndexBlocks(numBlocks, recoveryBlocks uint64) (*parityv0.BlockSet, [][blake2b.Size256]byte) {
+	blocks := make([]*parityv0.Block, numBlocks+recoveryBlocks)
+	blockHashes := make([][blake2b.Size256]byte, numBlocks+recoveryBlocks)
+	var counter [8]byte
+	for i := range blocks {
+		binary.BigEndian.PutUint64(counter[:], uint64(i)+1)
+		blockHashes[i] = blake2b.Sum256(counter[:])
+		blocks[i] = &parityv0.Block{
+			Hash: blockHashes[i][:],
+		}
+	}
+	return &parityv0.BlockSet{
+		Input:  blocks[:numBlocks],
+		Parity: blocks[numBlocks:],
+	}, blockHashes
+}
+
+func WriteParityFile(w io.WriteSeeker, data io.ReadSeeker, shardCfg ShardConfig) error {
+	fileSize, err := data.Seek(0, io.SeekEnd)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed seeking to end of input file")
+	}
+	if _, err := data.Seek(0, io.SeekStart); err != nil {
+		return kerrors.WithMsg(err, "Failed seeking to start of input file")
+	}
+	blockLayout, err := partitionBlocks(uint64(fileSize), shardCfg.BlockSize, shardCfg.ShardCount)
+	if err != nil {
+		return err
+	}
+	fileHash := blake2b.Sum256(nil)
+	indexPacket := parityv0.IndexPacket{
+		InputFile: &parityv0.InputFile{
+			Hash: fileHash[:],
+			Size: blockLayout.FileSize,
+		},
+		ShardConfig: &parityv0.ShardConfig{
+			BlockSize:     shardCfg.BlockSize,
+			Count:         shardCfg.ShardCount,
+			RecoveryCount: shardCfg.RecoveryShardCount,
+			CodeMatrixConfig: &parityv0.CodeMatrixConfig{
+				Kind: string(CodeMatrixKindVandermonde),
+			},
+		},
+		BlockSet: &parityv0.BlockSet{
+			Input:  make([]*parityv0.Block, blockLayout.NumBlocks),
+			Parity: make([]*parityv0.Block, shardCfg.RecoveryShardCount*blockLayout.ShardStride),
+		},
+	}
+	var _ [][blake2b.Size256]byte
+	indexPacket.BlockSet, _ = initIndexBlocks(blockLayout.BlockSize, shardCfg.RecoveryShardCount*blockLayout.ShardStride)
+	indexPacketPlaceholderBytes, err := proto.Marshal(&indexPacket)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed marshalling placeholder index packet")
+	}
+	if err := WritePacket(w, PacketKindIndex, bytes.NewReader(indexPacketPlaceholderBytes)); err != nil {
+		return err
+	}
+	return nil
 }
