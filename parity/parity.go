@@ -299,6 +299,32 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	}
 }
 
+func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize uint64) ([HeaderHashSize]byte, error) {
+	fileHasher, err := blake2b.New256(nil)
+	if err != nil {
+		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
+	}
+	buf := make([]byte, blockSize)
+	for blockIdx := range indexPacket.BlockSet.Input {
+		clear(buf)
+		n, err := io.ReadFull(data, buf)
+		if err != nil {
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+			}
+		}
+		if _, err := fileHasher.Write(buf[:n]); err != nil {
+			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
+		}
+		h := blake2b.Sum256(buf)
+		copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
+	}
+	var fileHash [HeaderHashSize]byte
+	copy(fileHash[:], fileHasher.Sum(nil))
+	indexPacket.InputFile.Hash = fileHash[:]
+	return fileHash, nil
+}
+
 type (
 	WriteSeekTruncater interface {
 		io.WriteSeeker
@@ -340,40 +366,21 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	}
 	indexPacket.BlockSet = initIndexBlocks(blockLayout.NumBlocks, blockLayout.NumParityBlocks)
 
-	fileHasher, err := blake2b.New256(nil)
+	fileHash, err := hashDataBlocks(&indexPacket, data, blockLayout.BlockSize)
 	if err != nil {
-		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
+		return emptyHeaderHash, err
 	}
-	buf := make([]byte, blockLayout.BlockSize)
-	for blockIdx := range indexPacket.BlockSet.Input {
-		clear(buf)
-		n, err := io.ReadFull(data, buf)
-		if err != nil {
-			if !errors.Is(err, io.ErrUnexpectedEOF) {
-				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
-			}
-		}
-		if _, err := fileHasher.Write(buf[:n]); err != nil {
-			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
-		}
-		h := blake2b.Sum256(buf)
-		copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
-	}
-	var fileHash [HeaderHashSize]byte
-	copy(fileHash[:], fileHasher.Sum(nil))
-	indexPacket.InputFile.Hash = fileHash[:]
 
 	indexPacketBodySize := proto.Size(&indexPacket)
 	indexPacketSize := uint64(headerSize) + uint64(indexPacketBodySize)
 	parityPacketSize := uint64(headerSize) + uint64(blockLayout.BlockSize)
 	parityShardSize := indexPacketSize + parityPacketSize*uint64(blockLayout.ShardStride)
 	parityFileBodySize := parityShardSize * uint64(blockLayout.ParityShardCount)
-	parityFileSize := parityFileBodySize + indexPacketSize
-	if err := w.Truncate(int64(parityFileSize)); err != nil {
+	if err := w.Truncate(int64(parityFileBodySize + indexPacketSize)); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed resizing parity file")
 	}
 
-	buf = make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
+	buf := make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
 	allBlocks := make([][]byte, blockLayout.ShardCount+blockLayout.ParityShardCount)
 	for i := range allBlocks {
 		start := blockLayout.BlockSize * uint64(i)
