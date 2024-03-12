@@ -311,6 +311,9 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking to end of input file")
 	}
+	if _, err := data.Seek(0, io.SeekStart); err != nil {
+		return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking to beginning of input file")
+	}
 
 	blockLayout, err := partitionBlocks(uint64(fileSize), shardCfg)
 	if err != nil {
@@ -322,10 +325,8 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, kerrors.WithKind(err, ErrConfig, "Invalid parity config")
 	}
 
-	fileHash := blake2b.Sum256(nil)
 	indexPacket := parityv0.IndexPacket{
 		InputFile: &parityv0.InputFile{
-			Hash: fileHash[:],
 			Size: blockLayout.FileSize,
 		},
 		ShardConfig: &parityv0.ShardConfig{
@@ -339,6 +340,29 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	}
 	indexPacket.BlockSet = initIndexBlocks(blockLayout.NumBlocks, blockLayout.NumParityBlocks)
 
+	fileHasher, err := blake2b.New256(nil)
+	if err != nil {
+		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
+	}
+	buf := make([]byte, blockLayout.BlockSize)
+	for blockIdx := range indexPacket.BlockSet.Input {
+		clear(buf)
+		n, err := io.ReadFull(data, buf)
+		if err != nil {
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+			}
+		}
+		if _, err := fileHasher.Write(buf[:n]); err != nil {
+			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
+		}
+		h := blake2b.Sum256(buf)
+		copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
+	}
+	var fileHash [HeaderHashSize]byte
+	copy(fileHash[:], fileHasher.Sum(nil))
+	indexPacket.InputFile.Hash = fileHash[:]
+
 	indexPacketBodySize := proto.Size(&indexPacket)
 	indexPacketSize := uint64(headerSize) + uint64(indexPacketBodySize)
 	parityPacketSize := uint64(headerSize) + uint64(blockLayout.BlockSize)
@@ -349,7 +373,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed resizing parity file")
 	}
 
-	buf := make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
+	buf = make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
 	allBlocks := make([][]byte, blockLayout.ShardCount+blockLayout.ParityShardCount)
 	for i := range allBlocks {
 		start := blockLayout.BlockSize * uint64(i)
@@ -375,7 +399,9 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 				}
 			}
 			h := blake2b.Sum256(i)
-			copy(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:])
+			if !bytes.Equal(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:]) {
+				return emptyHeaderHash, kerrors.WithMsg(err, "File changed during reading")
+			}
 		}
 
 		if err := enc.Encode(dataBlocks, parityBlocks); err != nil {
@@ -412,9 +438,8 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	if _, err := w.Seek(int64(parityFileBodySize), io.SeekStart); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 	}
-	indexHash, err := WritePacket(w, PacketKindIndex, bytes.NewReader(indexPacketBytes))
-	if err != nil {
+	if _, err := WritePacket(w, PacketKindIndex, bytes.NewReader(indexPacketBytes)); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing index packet")
 	}
-	return indexHash, nil
+	return fileHash, nil
 }

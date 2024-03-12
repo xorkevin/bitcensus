@@ -147,6 +147,7 @@ func TestPartitionBlocks(t *testing.T) {
 				ShardStride:        2,
 				NumLastShardBlocks: 1,
 				ParityShardCount:   2,
+				NumParityBlocks:    4,
 			},
 		},
 	} {
