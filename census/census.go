@@ -102,13 +102,13 @@ func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
 		log:           klog.NewLevelLogger(log),
 		dataDir:       dataDir,
 		cfg:           cfg,
-		defaultHasher: b3sum,
+		defaultHasher: b2sum,
 		hashers:       algs,
 		verifier:      verifier,
 	}
 }
 
-func (c *Census) getFilesRepo(ctx context.Context, name string, mode string) (censusdbmodel.Repo, *dbsql.SQLClient, error) {
+func (c *Census) getFilesRepo(name string, mode string) (censusdbmodel.Repo, *dbsql.SQLClient, error) {
 	// url must be in the form of
 	// file:rel/path/to/file.db?optquery=value&otheroptquery=value
 	dir := path.Join(c.dataDir, "db")
@@ -179,7 +179,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 		hasher = c.hashers[cfg.HashAlg]
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rwc")
+	files, d, err := c.getFilesRepo(name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
@@ -410,7 +410,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 		hasher = c.hashers[cfg.HashAlg]
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rw")
+	files, d, err := c.getFilesRepo(name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
@@ -554,7 +554,7 @@ func (c *Census) ExportRepo(ctx context.Context, w io.Writer, name string) (retE
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "ro")
+	files, d, err := c.getFilesRepo(name, "ro")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
@@ -599,7 +599,7 @@ func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, overr
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
-	files, d, err := c.getFilesRepo(ctx, name, "rwc")
+	files, d, err := c.getFilesRepo(name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
 	}
