@@ -72,7 +72,7 @@ type (
 const (
 	PacketVersion       = 0
 	MagicBytes          = "\xd5\x66\x67\x80\x0d\x0a\x1a\x04"
-	HeaderHashSize      = 32
+	HeaderHashSize      = 64
 	headerVersionOffset = len(MagicBytes)
 	headerSumOffset     = headerVersionOffset + 4
 	headerHashOffset    = headerSumOffset + 4
@@ -179,7 +179,7 @@ func WritePacket(w io.WriteSeeker, kind PacketKind, data io.Reader) ([HeaderHash
 	if _, err := w.Write(placeholderHeader[:]); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to write placeholder packet header")
 	}
-	h, err := blake2b.New256(nil)
+	h, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create packet hash")
 	}
@@ -284,11 +284,11 @@ func partitionBlocks(fileSize uint64, cfg ShardConfig) (*blockLayout, error) {
 
 func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	blocks := make([]*parityv0.Block, numBlocks+parityBlocks)
-	blockHashes := make([][blake2b.Size256]byte, numBlocks+parityBlocks)
+	blockHashes := make([][blake2b.Size]byte, numBlocks+parityBlocks)
 	var counter [8]byte
 	for i := range blocks {
 		binary.BigEndian.PutUint64(counter[:], uint64(i))
-		blockHashes[i] = blake2b.Sum256(counter[:])
+		blockHashes[i] = blake2b.Sum512(counter[:])
 		blocks[i] = &parityv0.Block{
 			Hash: blockHashes[i][:],
 		}
@@ -300,7 +300,7 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 }
 
 func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize uint64) ([HeaderHashSize]byte, error) {
-	fileHasher, err := blake2b.New256(nil)
+	fileHasher, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
 	}
@@ -316,7 +316,7 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize
 		if _, err := fileHasher.Write(buf[:n]); err != nil {
 			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
 		}
-		h := blake2b.Sum256(buf)
+		h := blake2b.Sum512(buf)
 		copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
 	}
 	var fileHash [HeaderHashSize]byte
@@ -405,7 +405,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 					return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
 				}
 			}
-			h := blake2b.Sum256(i)
+			h := blake2b.Sum512(i)
 			if !bytes.Equal(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:]) {
 				return emptyHeaderHash, kerrors.WithMsg(err, "File changed during reading")
 			}

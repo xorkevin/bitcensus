@@ -115,7 +115,7 @@ func TestWritePacket(t *testing.T) {
 		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
 		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
 		padding := make([]byte, 128-header.Length%128)
-		assert.Equal(blake2b.Sum256(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
+		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 		buf = buf[headerSize+int(header.Length):]
 	}
 	assert.Len(buf, 0)
