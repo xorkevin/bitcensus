@@ -525,6 +525,7 @@ func (c *Census) verifyFile(hasher h2streamhash.Hasher, dir fs.FS, name string, 
 }
 
 func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error) {
+	var buf [1024 * 1024]byte
 	f, err := dir.Open(name)
 	if err != nil {
 		return kerrors.WithMsg(err, "Failed opening file")
@@ -534,7 +535,7 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close file"))
 		}
 	}()
-	if _, err := io.Copy(dest, f); err != nil {
+	if _, err := io.CopyBuffer(dest, f, buf[:]); err != nil {
 		return kerrors.WithMsg(err, "Failed reading file")
 	}
 	return nil
