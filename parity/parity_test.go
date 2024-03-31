@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/blake2b"
+	"google.golang.org/protobuf/proto"
+	"xorkevin.dev/bitcensus/pb/parityv0"
 )
 
 func TestPacketHeader(t *testing.T) {
@@ -114,7 +116,7 @@ func TestWritePacket(t *testing.T) {
 		binary.BigEndian.PutUint32(trailer[:], header.Version)
 		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
 		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
-		padding := make([]byte, 128-header.Length%128)
+		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 		buf = buf[headerSize+int(header.Length):]
 	}
@@ -222,11 +224,17 @@ func TestWriteParityFile(t *testing.T) {
 	inpFileName := filepath.Join(tmpdir, "testfile")
 	parityFileName := filepath.Join(tmpdir, "parityfile")
 
+	const (
+		fileSize         uint64 = 16*1024 - 512
+		blockSize        uint64 = 1024
+		shardCount       uint64 = 6
+		parityShardCount uint64 = 3
+	)
 	var expectedHash [HeaderHashSize]byte
 	{
 		h, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil)
 		assert.NoError(err)
-		var buf [16*1024 - 512]byte
+		var buf [fileSize]byte
 		_, err = io.ReadFull(h, buf[:])
 		assert.NoError(err)
 		assert.NoError(os.WriteFile(inpFileName, buf[:], 0o666))
@@ -253,9 +261,9 @@ func TestWriteParityFile(t *testing.T) {
 			}
 		}()
 		return WriteParityFile(out, inp, ShardConfig{
-			BlockSize:        1024,
-			ShardCount:       6,
-			ParityShardCount: 3,
+			BlockSize:        blockSize,
+			ShardCount:       shardCount,
+			ParityShardCount: parityShardCount,
 		})
 	}()
 	assert.NoError(err)
@@ -264,6 +272,45 @@ func TestWriteParityFile(t *testing.T) {
 	parityFile, err := os.ReadFile(parityFileName)
 	assert.NoError(err)
 
+	// search for magic bytes and version to count packets
 	// 3 index packets, 9 parity packets, 1 final index packet
-	assert.Equal(3+9+1, bytes.Count(parityFile, []byte(MagicBytes)))
+	assert.Equal(3+9+1, bytes.Count(parityFile, []byte(MagicBytes+"\x00\x00\x00\x00")))
+
+	var indexPacketHeader PacketHeader
+	assert.NoError(indexPacketHeader.UnmarshalBinary(parityFile))
+	assert.NoError(indexPacketHeader.Verify())
+
+	indexPacketBody := parityFile[headerSize : headerSize+int(indexPacketHeader.Length)]
+
+	var trailer [16]byte
+	binary.BigEndian.PutUint32(trailer[:], indexPacketHeader.Version)
+	binary.LittleEndian.PutUint64(trailer[4:], indexPacketHeader.Length)
+	binary.BigEndian.PutUint32(trailer[12:], uint32(indexPacketHeader.Kind))
+	hh, err := blake2b.New512(nil)
+	assert.NoError(err)
+	_, err = hh.Write(indexPacketBody)
+	assert.NoError(err)
+	_, err = hh.Write(make([]byte, hashBlockSize-indexPacketHeader.Length%hashBlockSize))
+	assert.NoError(err)
+	_, err = hh.Write(trailer[:])
+	assert.NoError(err)
+	assert.Equal(hh.Sum(nil), indexPacketHeader.PacketHash[:])
+
+	var indexPacket parityv0.IndexPacket
+	assert.NoError(proto.Unmarshal(indexPacketBody, &indexPacket))
+
+	assert.Equal(fileHash[:], indexPacket.GetInputFile().GetHash())
+	assert.Equal(fileSize, indexPacket.GetInputFile().GetSize())
+	assert.Equal(blockSize, indexPacket.GetShardConfig().GetBlockSize())
+	assert.Equal(shardCount, indexPacket.GetShardConfig().GetCount())
+	assert.Equal(parityShardCount, indexPacket.GetShardConfig().GetParityCount())
+	assert.Equal(string(CodeMatrixKindVandermonde), indexPacket.GetShardConfig().GetCodeMatrixConfig().GetKind())
+	assert.Len(indexPacket.GetBlockSet().GetInput(), 16)
+	assert.Len(indexPacket.GetBlockSet().GetParity(), 9)
+	for _, i := range indexPacket.GetBlockSet().GetParity() {
+		// ensure that all parity file packets are present
+		h := i.GetHash()
+		assert.True(len(h) > 0)
+		assert.True(bytes.Contains(parityFile, h))
+	}
 }
