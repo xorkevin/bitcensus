@@ -262,14 +262,19 @@ func partitionBlocks(fileSize uint64, cfg ShardConfig) (*blockLayout, error) {
 		ShardCount:       cfg.ShardCount,
 		ParityShardCount: cfg.ParityShardCount,
 	}
-	if layout.FileSize == 0 {
-		return nil, kerrors.WithKind(nil, ErrConfig, "Empty file")
-	}
 	if layout.BlockSize == 0 {
 		return nil, kerrors.WithKind(nil, ErrConfig, "Invalid block size")
 	}
 	if layout.ShardCount == 0 {
 		return nil, kerrors.WithKind(nil, ErrConfig, "Invalid shard count")
+	}
+	if layout.ShardCount+layout.ParityShardCount > 255 {
+		return nil, kerrors.WithKind(nil, ErrConfig, "Shard counts may not exceed 255")
+	}
+	layout.BlockSize = min(layout.BlockSize, layout.FileSize)
+	if layout.FileSize == 0 {
+		layout.ShardCount = 0
+		return &layout, nil
 	}
 	layout.NumBlocks = (layout.FileSize + layout.BlockSize - 1) / layout.BlockSize
 	layout.LastBlockSize = layout.FileSize - layout.BlockSize*(layout.NumBlocks-1)
@@ -304,20 +309,22 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
 	}
-	buf := make([]byte, blockSize)
-	for blockIdx := range indexPacket.BlockSet.Input {
-		clear(buf)
-		n, err := io.ReadFull(data, buf)
-		if err != nil {
-			if !errors.Is(err, io.ErrUnexpectedEOF) {
-				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+	if blockSize > 0 {
+		buf := make([]byte, blockSize)
+		for blockIdx := range indexPacket.BlockSet.Input {
+			clear(buf)
+			n, err := io.ReadFull(data, buf)
+			if err != nil {
+				if !errors.Is(err, io.ErrUnexpectedEOF) {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+				}
 			}
+			if _, err := fileHasher.Write(buf[:n]); err != nil {
+				return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
+			}
+			h := blake2b.Sum512(buf)
+			copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
 		}
-		if _, err := fileHasher.Write(buf[:n]); err != nil {
-			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
-		}
-		h := blake2b.Sum512(buf)
-		copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
 	}
 	var fileHash [HeaderHashSize]byte
 	copy(fileHash[:], fileHasher.Sum(nil))
@@ -346,11 +353,6 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, err
 	}
 
-	enc, err := reedsolomon.NewVandermondeEncoder(int(blockLayout.ShardCount), int(blockLayout.ParityShardCount))
-	if err != nil {
-		return emptyHeaderHash, kerrors.WithKind(err, ErrConfig, "Invalid parity config")
-	}
-
 	indexPacket := parityv0.IndexPacket{
 		InputFile: &parityv0.InputFile{
 			Size: blockLayout.FileSize,
@@ -359,12 +361,16 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 			BlockSize:   blockLayout.BlockSize,
 			Count:       blockLayout.ShardCount,
 			ParityCount: blockLayout.ParityShardCount,
-			CodeMatrixConfig: &parityv0.CodeMatrixConfig{
-				Kind: string(CodeMatrixKindVandermonde),
-			},
 		},
 	}
-	indexPacket.BlockSet = initIndexBlocks(blockLayout.NumBlocks, blockLayout.NumParityBlocks)
+	if blockLayout.ShardCount > 0 && blockLayout.ParityShardCount > 0 {
+		indexPacket.ShardConfig.CodeMatrixConfig = &parityv0.CodeMatrixConfig{
+			Kind: string(CodeMatrixKindVandermonde),
+		}
+	}
+	if blockLayout.NumBlocks > 0 {
+		indexPacket.BlockSet = initIndexBlocks(blockLayout.NumBlocks, blockLayout.NumParityBlocks)
+	}
 
 	fileHash, err := hashDataBlocks(&indexPacket, data, blockLayout.BlockSize)
 	if err != nil {
@@ -380,50 +386,63 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed resizing parity file")
 	}
 
-	buf := make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
-	allBlocks := make([][]byte, blockLayout.ShardCount+blockLayout.ParityShardCount)
-	for i := range allBlocks {
-		start := blockLayout.BlockSize * uint64(i)
-		allBlocks[i] = buf[start : start+blockLayout.BlockSize]
-	}
-	dataBlocks := allBlocks[:blockLayout.ShardCount]
-	parityBlocks := allBlocks[blockLayout.ShardCount:]
-	for stripeIdx := range blockLayout.ShardStride {
-		// clear buffer before reading
-		clear(buf)
+	if blockLayout.BlockSize > 0 {
+		var enc *reedsolomon.Matrix
+		if blockLayout.ParityShardCount > 0 {
+			var err error
+			enc, err = reedsolomon.NewVandermondeEncoder(int(blockLayout.ShardCount), int(blockLayout.ParityShardCount))
+			if err != nil {
+				return emptyHeaderHash, kerrors.WithKind(err, ErrConfig, "Invalid parity config")
+			}
+		}
 
-		for n, i := range dataBlocks {
-			if stripeIdx >= blockLayout.NumLastShardBlocks && uint64(n) == blockLayout.ShardCount-1 {
-				break
-			}
-			blockIdx := int64(blockLayout.ShardStride)*int64(n) + int64(stripeIdx)
-			if _, err := data.Seek(int64(blockLayout.BlockSize)*blockIdx, io.SeekStart); err != nil {
-				return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking input file")
-			}
-			if _, err := io.ReadFull(data, i); err != nil {
-				if !errors.Is(err, io.ErrUnexpectedEOF) {
-					return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+		buf := make([]byte, blockLayout.BlockSize*(blockLayout.ShardCount+blockLayout.ParityShardCount))
+		allBlocks := make([][]byte, blockLayout.ShardCount+blockLayout.ParityShardCount)
+		for i := range allBlocks {
+			start := blockLayout.BlockSize * uint64(i)
+			allBlocks[i] = buf[start : start+blockLayout.BlockSize]
+		}
+		dataBlocks := allBlocks[:blockLayout.ShardCount]
+		parityBlocks := allBlocks[blockLayout.ShardCount:]
+		for stripeIdx := range blockLayout.ShardStride {
+			// clear buffer before reading
+			clear(buf)
+
+			for n, i := range dataBlocks {
+				if stripeIdx >= blockLayout.NumLastShardBlocks && uint64(n) == blockLayout.ShardCount-1 {
+					break
+				}
+				blockIdx := int64(blockLayout.ShardStride)*int64(n) + int64(stripeIdx)
+				if _, err := data.Seek(int64(blockLayout.BlockSize)*blockIdx, io.SeekStart); err != nil {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking input file")
+				}
+				if _, err := io.ReadFull(data, i); err != nil {
+					if !errors.Is(err, io.ErrUnexpectedEOF) {
+						return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+					}
+				}
+				h := blake2b.Sum512(i)
+				if !bytes.Equal(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:]) {
+					return emptyHeaderHash, kerrors.WithMsg(err, "File changed during reading")
 				}
 			}
-			h := blake2b.Sum512(i)
-			if !bytes.Equal(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:]) {
-				return emptyHeaderHash, kerrors.WithMsg(err, "File changed during reading")
-			}
-		}
 
-		if err := enc.Encode(dataBlocks, parityBlocks); err != nil {
-			return emptyHeaderHash, kerrors.WithMsg(err, "Failed encoding parity blocks")
-		}
+			if enc != nil {
+				if err := enc.Encode(dataBlocks, parityBlocks); err != nil {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed encoding parity blocks")
+				}
+			}
 
-		for n, i := range parityBlocks {
-			if _, err := w.Seek(int64(parityShardSize)*int64(n)+int64(indexPacketSize)+int64(parityPacketSize)*int64(stripeIdx), io.SeekStart); err != nil {
-				return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
+			for n, i := range parityBlocks {
+				if _, err := w.Seek(int64(parityShardSize)*int64(n)+int64(indexPacketSize)+int64(parityPacketSize)*int64(stripeIdx), io.SeekStart); err != nil {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
+				}
+				h, err := WritePacket(w, PacketKindParity, bytes.NewReader(i))
+				if err != nil {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing parity packet")
+				}
+				copy(indexPacket.BlockSet.Parity[int64(blockLayout.ShardStride)*int64(n)+int64(stripeIdx)].Hash, h[:])
 			}
-			h, err := WritePacket(w, PacketKindParity, bytes.NewReader(i))
-			if err != nil {
-				return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing parity packet")
-			}
-			copy(indexPacket.BlockSet.Parity[int64(blockLayout.ShardStride)*int64(n)+int64(stripeIdx)].Hash, h[:])
 		}
 	}
 

@@ -124,14 +124,14 @@ func TestWritePacket(t *testing.T) {
 func TestPartitionBlocks(t *testing.T) {
 	t.Parallel()
 
-	assert := require.New(t)
-
 	for _, tc := range []struct {
+		name     string
 		fileSize uint64
 		cfg      ShardConfig
 		exp      *blockLayout
 	}{
 		{
+			name:     "packs shards",
 			fileSize: 32,
 			cfg: ShardConfig{
 				BlockSize:        5,
@@ -150,16 +150,81 @@ func TestPartitionBlocks(t *testing.T) {
 				NumParityBlocks:    4,
 			},
 		},
+		{
+			name:     "file smaller than block size",
+			fileSize: 32,
+			cfg: ShardConfig{
+				BlockSize:        64,
+				ShardCount:       5,
+				ParityShardCount: 2,
+			},
+			exp: &blockLayout{
+				FileSize:           32,
+				BlockSize:          32,
+				NumBlocks:          1,
+				LastBlockSize:      32,
+				ShardCount:         1,
+				ShardStride:        1,
+				NumLastShardBlocks: 1,
+				ParityShardCount:   2,
+				NumParityBlocks:    2,
+			},
+		},
+		{
+			name:     "empty file",
+			fileSize: 0,
+			cfg: ShardConfig{
+				BlockSize:        5,
+				ShardCount:       5,
+				ParityShardCount: 2,
+			},
+			exp: &blockLayout{
+				FileSize:           0,
+				BlockSize:          0,
+				NumBlocks:          0,
+				LastBlockSize:      0,
+				ShardCount:         0,
+				ShardStride:        0,
+				NumLastShardBlocks: 0,
+				ParityShardCount:   2,
+				NumParityBlocks:    0,
+			},
+		},
 	} {
-		layout, err := partitionBlocks(tc.fileSize, tc.cfg)
-		assert.NoError(err)
-		assert.Equal(tc.exp, layout)
-		layout2, err := partitionBlocks(layout.FileSize, ShardConfig{
-			BlockSize:        layout.BlockSize,
-			ShardCount:       layout.ShardCount,
-			ParityShardCount: layout.ParityShardCount,
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert := require.New(t)
+
+			layout, err := partitionBlocks(tc.fileSize, tc.cfg)
+			assert.NoError(err)
+			assert.Equal(tc.exp, layout)
+			if layout.FileSize > 0 {
+				layout2, err := partitionBlocks(layout.FileSize, ShardConfig{
+					BlockSize:        layout.BlockSize,
+					ShardCount:       layout.ShardCount,
+					ParityShardCount: layout.ParityShardCount,
+				})
+				assert.NoError(err)
+				assert.Equal(tc.exp, layout2)
+			}
 		})
+	}
+}
+
+func TestWriteParityFile(t *testing.T) {
+	t.Parallel()
+
+	assert := require.New(t)
+
+	tmpdir := t.TempDir()
+
+	{
+		h, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil)
 		assert.NoError(err)
-		assert.Equal(tc.exp, layout2)
+		var buf [16*1024 - 512]byte
+		_, err = io.ReadFull(h, buf[:])
+		assert.NoError(err)
+		assert.NoError(os.WriteFile(filepath.Join(tmpdir, "testfile"), buf[:], 0o666))
 	}
 }

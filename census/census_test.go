@@ -39,7 +39,7 @@ func TestCensus(t *testing.T) {
 		name = filepath.FromSlash(path.Join(storageDir, name))
 		dir := filepath.Dir(name)
 		assert.NoError(os.MkdirAll(dir, 0o777))
-		assert.NoError(os.WriteFile(name, []byte(content), 0o644))
+		assert.NoError(os.WriteFile(name, []byte(content), 0o666))
 	}
 
 	syncFiles := func() {
