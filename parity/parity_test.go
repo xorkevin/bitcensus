@@ -219,12 +219,51 @@ func TestWriteParityFile(t *testing.T) {
 
 	tmpdir := t.TempDir()
 
+	inpFileName := filepath.Join(tmpdir, "testfile")
+	parityFileName := filepath.Join(tmpdir, "parityfile")
+
+	var expectedHash [HeaderHashSize]byte
 	{
 		h, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil)
 		assert.NoError(err)
 		var buf [16*1024 - 512]byte
 		_, err = io.ReadFull(h, buf[:])
 		assert.NoError(err)
-		assert.NoError(os.WriteFile(filepath.Join(tmpdir, "testfile"), buf[:], 0o666))
+		assert.NoError(os.WriteFile(inpFileName, buf[:], 0o666))
+		expectedHash = blake2b.Sum512(buf[:])
 	}
+
+	fileHash, err := func() (_ [HeaderHashSize]byte, retErr error) {
+		inp, err := os.Open(inpFileName)
+		if err != nil {
+			return emptyHeaderHash, err
+		}
+		defer func() {
+			if err := inp.Close(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}()
+		out, err := os.Create(parityFileName)
+		if err != nil {
+			return emptyHeaderHash, err
+		}
+		defer func() {
+			if err := out.Close(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+		}()
+		return WriteParityFile(out, inp, ShardConfig{
+			BlockSize:        1024,
+			ShardCount:       6,
+			ParityShardCount: 3,
+		})
+	}()
+	assert.NoError(err)
+	assert.Equal(expectedHash, fileHash)
+
+	parityFile, err := os.ReadFile(parityFileName)
+	assert.NoError(err)
+
+	// 3 index packets, 9 parity packets, 1 final index packet
+	assert.Equal(3+9+1, bytes.Count(parityFile, []byte(MagicBytes)))
 }
