@@ -3,7 +3,6 @@ package parity
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"hash"
 	"hash/crc32"
 	"io"
@@ -304,7 +303,7 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	}
 }
 
-func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize uint64) ([HeaderHashSize]byte, error) {
+func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize, lastBlockSize uint64) ([HeaderHashSize]byte, error) {
 	fileHasher, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
@@ -313,16 +312,17 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize
 		buf := make([]byte, blockSize)
 		for blockIdx := range indexPacket.BlockSet.Input {
 			clear(buf)
-			n, err := io.ReadFull(data, buf)
-			if err != nil {
-				if !errors.Is(err, io.ErrUnexpectedEOF) {
-					return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
-				}
+			b := buf
+			if blockIdx == len(indexPacket.BlockSet.Input)-1 {
+				b = b[:lastBlockSize]
 			}
-			if _, err := fileHasher.Write(buf[:n]); err != nil {
+			if _, err := io.ReadFull(data, b); err != nil {
+				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+			}
+			if _, err := fileHasher.Write(b); err != nil {
 				return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
 			}
-			h := blake2b.Sum512(buf)
+			h := blake2b.Sum512(b)
 			copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
 		}
 	}
@@ -372,7 +372,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		indexPacket.BlockSet = initIndexBlocks(blockLayout.NumBlocks, blockLayout.NumParityBlocks)
 	}
 
-	fileHash, err := hashDataBlocks(&indexPacket, data, blockLayout.BlockSize)
+	fileHash, err := hashDataBlocks(&indexPacket, data, blockLayout.BlockSize, blockLayout.LastBlockSize)
 	if err != nil {
 		return emptyHeaderHash, err
 	}
@@ -412,16 +412,18 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 				if stripeIdx >= blockLayout.NumLastShardBlocks && uint64(n) == blockLayout.ShardCount-1 {
 					break
 				}
-				blockIdx := int64(blockLayout.ShardStride)*int64(n) + int64(stripeIdx)
-				if _, err := data.Seek(int64(blockLayout.BlockSize)*blockIdx, io.SeekStart); err != nil {
+				blockIdx := blockLayout.ShardStride*uint64(n) + stripeIdx
+				if _, err := data.Seek(int64(blockLayout.BlockSize)*int64(blockIdx), io.SeekStart); err != nil {
 					return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking input file")
 				}
-				if _, err := io.ReadFull(data, i); err != nil {
-					if !errors.Is(err, io.ErrUnexpectedEOF) {
-						return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
-					}
+				b := i
+				if int(blockIdx) == len(indexPacket.BlockSet.Input)-1 {
+					b = i[:blockLayout.LastBlockSize]
 				}
-				h := blake2b.Sum512(i)
+				if _, err := io.ReadFull(data, b); err != nil {
+					return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
+				}
+				h := blake2b.Sum512(b)
 				if !bytes.Equal(indexPacket.BlockSet.Input[int(blockIdx)].Hash, h[:]) {
 					return emptyHeaderHash, kerrors.WithMsg(err, "File changed during reading")
 				}
