@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -75,7 +74,7 @@ func TestWritePacket(t *testing.T) {
 		}()
 		packetHashes := make([][HeaderHashSize]byte, 0, len(packetPayloads))
 		for _, i := range packetPayloads {
-			h, err := WritePacket(f, PacketKindIndex, strings.NewReader(i))
+			h, err := WritePacket(f, PacketKindIndex, []byte(i))
 			if err != nil {
 				return nil, err
 			}
@@ -83,23 +82,9 @@ func TestWritePacket(t *testing.T) {
 		}
 		return packetHashes, nil
 	}(packetPayloads)
+	assert.NoError(err)
 
-	buf, err := func() (_ []byte, retErr error) {
-		f, err := os.Open(packetfile)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			if err := f.Close(); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
-		}()
-		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, f); err != nil {
-			return nil, err
-		}
-		return buf.Bytes(), nil
-	}()
+	buf, err := os.ReadFile(packetfile)
 	assert.NoError(err)
 
 	for n, i := range packetPayloads {
@@ -118,6 +103,11 @@ func TestWritePacket(t *testing.T) {
 		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
 		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
+
+		body, err := ReadPacket(bytes.NewReader(buf), PacketKindIndex, emptyHeaderHash, nil)
+		assert.NoError(err)
+		assert.Equal(i, string(body))
+
 		buf = buf[headerSize+int(header.Length):]
 	}
 	assert.Len(buf, 0)
