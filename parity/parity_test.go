@@ -26,7 +26,7 @@ func TestPacketHeader(t *testing.T) {
 	assert.Equal(headerHashOffset, headerSumOffset+4)
 	assert.Equal(headerLengthOffset, headerHashOffset+HeaderHashSize)
 	assert.Equal(headerKindOffset, headerLengthOffset+8)
-	assert.Equal(headerSize, headerKindOffset+4)
+	assert.Equal(HeaderSize, headerKindOffset+4)
 
 	header := PacketHeader{
 		Version:    0,
@@ -37,7 +37,7 @@ func TestPacketHeader(t *testing.T) {
 
 	headerBytes, err := header.MarshalBinary()
 	assert.NoError(err)
-	assert.Len(headerBytes, headerSize)
+	assert.Len(headerBytes, HeaderSize)
 
 	header.SetSum()
 	assert.NoError(header.Verify())
@@ -94,8 +94,8 @@ func TestWritePacket(t *testing.T) {
 		assert.Equal(uint32(PacketVersion), header.Version)
 		assert.Equal(uint64(len(i)), header.Length)
 		assert.Equal(PacketKindIndex, header.Kind)
-		assert.True(len(buf) >= headerSize+int(header.Length))
-		assert.Equal(i, string(buf[headerSize:headerSize+int(header.Length)]))
+		assert.True(len(buf) >= HeaderSize+int(header.Length))
+		assert.Equal(i, string(buf[HeaderSize:HeaderSize+int(header.Length)]))
 		assert.Equal(packetHashes[n], header.PacketHash)
 		var trailer [16]byte
 		binary.BigEndian.PutUint32(trailer[:], header.Version)
@@ -104,11 +104,11 @@ func TestWritePacket(t *testing.T) {
 		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 
-		body, err := ReadPacket(bytes.NewReader(buf), PacketKindIndex, emptyHeaderHash, nil)
+		body, err := ReadPacket(bytes.NewReader(buf), PacketKindIndex, emptyHeaderHash, 0, nil)
 		assert.NoError(err)
 		assert.Equal(i, string(body))
 
-		buf = buf[headerSize+int(header.Length):]
+		buf = buf[HeaderSize+int(header.Length):]
 	}
 	assert.Len(buf, 0)
 }
@@ -270,21 +270,22 @@ func TestWriteParityFile(t *testing.T) {
 	assert.NoError(indexPacketHeader.UnmarshalBinary(parityFile))
 	assert.NoError(indexPacketHeader.Verify())
 
-	indexPacketBody := parityFile[headerSize : headerSize+int(indexPacketHeader.Length)]
-
 	var trailer [16]byte
 	binary.BigEndian.PutUint32(trailer[:], indexPacketHeader.Version)
 	binary.LittleEndian.PutUint64(trailer[4:], indexPacketHeader.Length)
 	binary.BigEndian.PutUint32(trailer[12:], uint32(indexPacketHeader.Kind))
 	hh, err := blake2b.New512(nil)
 	assert.NoError(err)
-	_, err = hh.Write(indexPacketBody)
+	_, err = hh.Write(parityFile[HeaderSize : HeaderSize+int(indexPacketHeader.Length)])
 	assert.NoError(err)
 	_, err = hh.Write(make([]byte, hashBlockSize-indexPacketHeader.Length%hashBlockSize))
 	assert.NoError(err)
 	_, err = hh.Write(trailer[:])
 	assert.NoError(err)
 	assert.Equal(hh.Sum(nil), indexPacketHeader.PacketHash[:])
+
+	indexPacketBody, err := ReadPacket(bytes.NewReader(parityFile), PacketKindIndex, emptyHeaderHash, 0, nil)
+	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
 	assert.NoError(proto.Unmarshal(indexPacketBody, &indexPacket))
@@ -297,10 +298,14 @@ func TestWriteParityFile(t *testing.T) {
 	assert.Equal(string(CodeMatrixKindVandermonde), indexPacket.GetShardConfig().GetCodeMatrixConfig().GetKind())
 	assert.Len(indexPacket.GetBlockSet().GetInput(), 16)
 	assert.Len(indexPacket.GetBlockSet().GetParity(), 9)
+
+	buf := make([]byte, 1024*1024)
 	for _, i := range indexPacket.GetBlockSet().GetParity() {
 		// ensure that all parity file packets are present
-		h := i.GetHash()
-		assert.True(len(h) > 0)
-		assert.True(bytes.Contains(parityFile, h))
+		var h [HeaderHashSize]byte
+		copy(h[:], i.GetHash())
+		parityPacketBody, err := ReadPacket(bytes.NewReader(parityFile), PacketKindParity, h, blockSize, buf)
+		assert.NoError(err)
+		assert.Len(parityPacketBody, int(blockSize))
 	}
 }

@@ -84,12 +84,12 @@ const (
 	headerHashOffset    = headerSumOffset + 4
 	headerLengthOffset  = headerHashOffset + HeaderHashSize
 	headerKindOffset    = headerLengthOffset + 8
-	headerSize          = headerKindOffset + 4
+	HeaderSize          = headerKindOffset + 4
 	maxPacketLength     = 1 << 28 // 256MiB
 )
 
 func (h *PacketHeader) MarshalBinary() ([]byte, error) {
-	res := make([]byte, headerSize)
+	res := make([]byte, HeaderSize)
 	copy(res, []byte(MagicBytes))
 	binary.BigEndian.PutUint32(res[headerVersionOffset:], h.Version)
 	binary.BigEndian.PutUint32(res[headerSumOffset:], h.Sum())
@@ -113,7 +113,7 @@ func (h *PacketHeader) UnmarshalBinary(data []byte) error {
 		}
 		h.Version = v
 	}
-	if len(data) < headerSize {
+	if len(data) < HeaderSize {
 		return kerrors.WithKind(nil, ErrShortHeader, "Short header")
 	}
 	h.headerSum = binary.BigEndian.Uint32(data[headerSumOffset:])
@@ -224,7 +224,7 @@ func WritePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byt
 	return header.PacketHash, nil
 }
 
-func ReadPacket(r io.Reader, kind PacketKind, hash [HeaderHashSize]byte, body []byte) ([]byte, error) {
+func ReadPacket(r io.Reader, kind PacketKind, hash [HeaderHashSize]byte, length uint64, body []byte) ([]byte, error) {
 	buf := body
 	if len(buf) < 1024*1024 {
 		buf = make([]byte, 1024*1024)
@@ -233,8 +233,8 @@ func ReadPacket(r io.Reader, kind PacketKind, hash [HeaderHashSize]byte, body []
 readmore:
 	for {
 		b := buf[:offset]
-		if remainingHeaderBytes := headerSize - offset; remainingHeaderBytes > 0 {
-			n, err := io.ReadAtLeast(r, buf[offset:], headerSize-offset)
+		if remainingHeaderBytes := HeaderSize - offset; remainingHeaderBytes > 0 {
+			n, err := io.ReadAtLeast(r, buf[offset:], HeaderSize-offset)
 			offset += n
 			b = buf[:offset]
 			if err != nil {
@@ -253,7 +253,7 @@ readmore:
 				continue readmore
 			}
 			b = b[idx:]
-			if idxFromEnd := len(b); idxFromEnd < headerSize {
+			if idxFromEnd := len(b); idxFromEnd < HeaderSize {
 				offset = copy(buf, b)
 				continue readmore
 			}
@@ -271,12 +271,11 @@ readmore:
 				b = b[unsharedMagicBytesSize:]
 				continue nextidx
 			}
-			if header.Kind == PacketKindParity && header.PacketHash != hash {
+			if hash != emptyHeaderHash && header.PacketHash != hash {
 				b = b[unsharedMagicBytesSize:]
 				continue nextidx
 			}
-			packetSize := headerSize + int(header.Length)
-			if body != nil && len(body) != packetSize {
+			if length != 0 && header.Length != length {
 				b = b[unsharedMagicBytesSize:]
 				continue nextidx
 			}
@@ -285,6 +284,7 @@ readmore:
 				continue nextidx
 			}
 
+			packetSize := HeaderSize + int(header.Length)
 			if remainingCount := packetSize - len(b); remainingCount > 0 {
 				// more packet bytes need to be read
 				if len(buf)-offset < remainingCount {
@@ -315,7 +315,7 @@ readmore:
 				}
 			}
 
-			packetBytes := b[headerSize:packetSize]
+			packetBytes := b[HeaderSize:packetSize]
 			packetHash, err := calcPacketHash(header, packetBytes)
 			if err != nil {
 				return nil, err
@@ -473,8 +473,8 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	}
 
 	indexPacketBodySize := proto.Size(&indexPacket)
-	indexPacketSize := uint64(headerSize) + uint64(indexPacketBodySize)
-	parityPacketSize := uint64(headerSize) + uint64(blockLayout.BlockSize)
+	indexPacketSize := uint64(HeaderSize) + uint64(indexPacketBodySize)
+	parityPacketSize := uint64(HeaderSize) + uint64(blockLayout.BlockSize)
 	parityShardSize := indexPacketSize + parityPacketSize*uint64(blockLayout.ShardStride)
 	parityFileBodySize := parityShardSize * uint64(blockLayout.ParityShardCount)
 	if err := w.Truncate(int64(parityFileBodySize + indexPacketSize)); err != nil {
