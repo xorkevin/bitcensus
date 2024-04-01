@@ -74,7 +74,7 @@ func TestWritePacket(t *testing.T) {
 		}()
 		packetHashes := make([][HeaderHashSize]byte, 0, len(packetPayloads))
 		for _, i := range packetPayloads {
-			h, err := WritePacket(f, PacketKindIndex, []byte(i))
+			h, err := writePacket(f, PacketKindIndex, []byte(i))
 			if err != nil {
 				return nil, err
 			}
@@ -104,7 +104,7 @@ func TestWritePacket(t *testing.T) {
 		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 
-		body, err := ReadPacket(bytes.NewReader(buf), PacketKindIndex, emptyHeaderHash, 0, nil)
+		body, err := readPacket(bytes.NewReader(buf), PacketKindIndex, emptyHeaderHash, 0, nil, nil)
 		assert.NoError(err)
 		assert.Equal(i, string(body))
 
@@ -284,7 +284,7 @@ func TestWriteParityFile(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal(hh.Sum(nil), indexPacketHeader.PacketHash[:])
 
-	indexPacketBody, err := ReadPacket(bytes.NewReader(parityFile), PacketKindIndex, emptyHeaderHash, 0, nil)
+	indexPacketBody, err := readPacket(bytes.NewReader(parityFile), PacketKindIndex, emptyHeaderHash, 0, nil, nil)
 	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
@@ -299,12 +299,12 @@ func TestWriteParityFile(t *testing.T) {
 	assert.Len(indexPacket.GetBlockSet().GetInput(), 16)
 	assert.Len(indexPacket.GetBlockSet().GetParity(), 9)
 
-	buf := make([]byte, 1024*1024)
+	buf := make([]byte, 1024)
 	for _, i := range indexPacket.GetBlockSet().GetParity() {
 		// ensure that all parity file packets are present
 		var h [HeaderHashSize]byte
 		copy(h[:], i.GetHash())
-		parityPacketBody, err := ReadPacket(bytes.NewReader(parityFile), PacketKindParity, h, blockSize, buf)
+		parityPacketBody, err := readPacket(bytes.NewReader(parityFile), PacketKindParity, h, blockSize, buf, nil)
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}

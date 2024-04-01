@@ -194,7 +194,7 @@ func calcPacketHash(header PacketHeader, data []byte) ([HeaderHashSize]byte, err
 	return packetHash, nil
 }
 
-func WritePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byte, error) {
+func writePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byte, error) {
 	header := PacketHeader{
 		Version: PacketVersion,
 		Length:  uint64(len(data)),
@@ -224,9 +224,28 @@ func WritePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byt
 	return header.PacketHash, nil
 }
 
-func ReadPacket(r io.Reader, kind PacketKind, hash [HeaderHashSize]byte, length uint64, body []byte) ([]byte, error) {
+type (
+	packetCache struct {
+		maxPos int
+		m      map[[HeaderHashSize]byte][]cachedCandidate
+	}
+
+	cachedCandidate struct {
+		pos     int
+		invalid bool
+	}
+)
+
+func readPacket(r io.ReadSeeker, kind PacketKind, hash [HeaderHashSize]byte, length uint64, body []byte, cache *packetCache) ([]byte, error) {
+	pos := 0
+	if cache != nil {
+		if _, err := r.Seek(int64(cache.maxPos), io.SeekStart); err != nil {
+			return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
+		}
+		pos = cache.maxPos
+	}
 	buf := body
-	if len(buf) < 1024*1024 {
+	if len(buf) < HeaderSize {
 		buf = make([]byte, 1024*1024)
 	}
 	offset := 0
@@ -253,6 +272,10 @@ readmore:
 				continue readmore
 			}
 			b = b[idx:]
+			pos += idx
+			if cache != nil {
+				cache.maxPos = pos
+			}
 			if idxFromEnd := len(b); idxFromEnd < HeaderSize {
 				offset = copy(buf, b)
 				continue readmore
@@ -261,26 +284,58 @@ readmore:
 			var header PacketHeader
 			if err := header.UnmarshalBinary(b); err != nil {
 				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
 				continue nextidx
 			}
 			if err := header.Verify(); err != nil {
 				b = b[unsharedMagicBytesSize:]
-				continue nextidx
-			}
-			if header.Kind != kind {
-				b = b[unsharedMagicBytesSize:]
-				continue nextidx
-			}
-			if hash != emptyHeaderHash && header.PacketHash != hash {
-				b = b[unsharedMagicBytesSize:]
-				continue nextidx
-			}
-			if length != 0 && header.Length != length {
-				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
 				continue nextidx
 			}
 			if header.Length > maxPacketLength {
 				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
+				continue nextidx
+			}
+
+			if cache != nil && header.Kind == PacketKindParity {
+				cache.m[header.PacketHash] = append(cache.m[header.PacketHash], cachedCandidate{
+					pos:     pos,
+					invalid: false,
+				})
+			}
+
+			if header.Kind != kind {
+				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
+				continue nextidx
+			}
+			if hash != emptyHeaderHash && header.PacketHash != hash {
+				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
+				continue nextidx
+			}
+			if length != 0 && header.Length != length {
+				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
 				continue nextidx
 			}
 
@@ -308,7 +363,22 @@ readmore:
 				b = buf[:offset]
 				if err != nil {
 					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						// do not return error since EOF for a partial large packet does
+						// not imply that smaller packets do not exist
+
+						if cache != nil && header.Kind == PacketKindParity {
+							candidates := cache.m[header.PacketHash]
+							for n, i := range candidates {
+								if i.pos == pos {
+									candidates[n].invalid = true
+								}
+							}
+						}
 						b = b[unsharedMagicBytesSize:]
+						pos += unsharedMagicBytesSize
+						if cache != nil {
+							cache.maxPos = pos
+						}
 						continue nextidx
 					}
 					return nil, kerrors.WithMsg(err, "Failed to read parity file")
@@ -321,7 +391,19 @@ readmore:
 				return nil, err
 			}
 			if packetHash != header.PacketHash {
+				if cache != nil && header.Kind == PacketKindParity {
+					candidates := cache.m[header.PacketHash]
+					for n, i := range candidates {
+						if i.pos == pos {
+							candidates[n].invalid = true
+						}
+					}
+				}
 				b = b[unsharedMagicBytesSize:]
+				pos += unsharedMagicBytesSize
+				if cache != nil {
+					cache.maxPos = pos
+				}
 				continue nextidx
 			}
 			return packetBytes, nil
@@ -534,7 +616,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 				if _, err := w.Seek(int64(parityShardSize)*int64(n)+int64(indexPacketSize)+int64(parityPacketSize)*int64(stripeIdx), io.SeekStart); err != nil {
 					return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 				}
-				h, err := WritePacket(w, PacketKindParity, i)
+				h, err := writePacket(w, PacketKindParity, i)
 				if err != nil {
 					return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing parity packet")
 				}
@@ -554,14 +636,14 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		if _, err := w.Seek(int64(parityShardSize)*int64(i), io.SeekStart); err != nil {
 			return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 		}
-		if _, err := WritePacket(w, PacketKindIndex, indexPacketBytes); err != nil {
+		if _, err := writePacket(w, PacketKindIndex, indexPacketBytes); err != nil {
 			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing index packet")
 		}
 	}
 	if _, err := w.Seek(int64(parityFileBodySize), io.SeekStart); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 	}
-	if _, err := WritePacket(w, PacketKindIndex, indexPacketBytes); err != nil {
+	if _, err := writePacket(w, PacketKindIndex, indexPacketBytes); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing index packet")
 	}
 	return fileHash, nil
