@@ -23,6 +23,10 @@ var (
 	ErrConfig errConfig
 	// ErrPacketNotFound is returned when the packet is not found in the file
 	ErrPacketNotFound errPacketNotFound
+	// ErrMalformedPacket is returned when the packet is malformed
+	ErrMalformedPacket errPacket
+	// ErrPacketNoMatch is returned when the packet does not match
+	ErrPacketNoMatch errPacketNoMatch
 )
 
 type (
@@ -30,6 +34,8 @@ type (
 	errHeader         struct{}
 	errConfig         struct{}
 	errPacketNotFound struct{}
+	errPacket         struct{}
+	errPacketNoMatch  struct{}
 )
 
 func (e errShortHeader) Error() string {
@@ -46,6 +52,14 @@ func (e errConfig) Error() string {
 
 func (e errPacketNotFound) Error() string {
 	return "Packet not found"
+}
+
+func (e errPacket) Error() string {
+	return "Malformed packet"
+}
+
+func (e errPacketNoMatch) Error() string {
+	return "Packet does not match"
 }
 
 type (
@@ -236,7 +250,7 @@ type (
 	}
 )
 
-func readPacket(r io.ReadSeeker, kind PacketKind, hash [HeaderHashSize]byte, length uint64, body []byte, cache *packetCache) ([]byte, error) {
+func linearScanPacket(r io.ReadSeeker, kind PacketKind, hash [HeaderHashSize]byte, length uint64, buf []byte, cache *packetCache) ([]byte, error) {
 	pos := 0
 	if cache != nil {
 		if _, err := r.Seek(int64(cache.maxPos), io.SeekStart); err != nil {
@@ -244,7 +258,6 @@ func readPacket(r io.ReadSeeker, kind PacketKind, hash [HeaderHashSize]byte, len
 		}
 		pos = cache.maxPos
 	}
-	buf := body
 	if len(buf) < HeaderSize {
 		buf = make([]byte, 1024*1024)
 	}
@@ -409,6 +422,132 @@ readmore:
 			return packetBytes, nil
 		}
 	}
+}
+
+type (
+	packetHeaderProps struct {
+		kind   PacketKind
+		hash   [HeaderHashSize]byte
+		length uint64
+	}
+)
+
+func readPacket(r io.Reader, buf byteBuffer, match packetHeaderProps) ([]byte, byteBuffer, error) {
+	if err := buf.Fill(r, HeaderSize); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, buf, kerrors.WithKind(err, ErrPacketNotFound, "Packet not found")
+		}
+		return nil, buf, kerrors.WithMsg(err, "Failed to read parity file")
+	}
+
+	b := buf.Bytes()
+	var header PacketHeader
+	if err := header.UnmarshalBinary(b); err != nil {
+		return nil, buf, kerrors.WithKind(err, ErrMalformedPacket, "Invalid packet header")
+	}
+	if err := header.Verify(); err != nil {
+		return nil, buf, kerrors.WithKind(err, ErrMalformedPacket, "Invalid packet header")
+	}
+	if header.Length > maxPacketLength {
+		return nil, buf, kerrors.WithKind(nil, ErrMalformedPacket, "Packet exceeds max size")
+	}
+
+	if header.Kind != match.kind {
+		return nil, buf, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet kind does not match")
+	}
+	if match.hash != emptyHeaderHash && header.PacketHash != match.hash {
+		return nil, buf, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet hash does not match")
+	}
+	if match.length != 0 && header.Length != match.length {
+		return nil, buf, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet length does not match")
+	}
+
+	packetSize := HeaderSize + int(header.Length)
+	if err := buf.Fill(r, packetSize); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			// do not return error since EOF for a partial large packet does not
+			// imply that smaller packets do not exist
+			return nil, buf, kerrors.WithKind(nil, ErrMalformedPacket, "Packet exceeds max size")
+		}
+		return nil, buf, kerrors.WithMsg(err, "Failed to read parity file")
+	}
+
+	b = buf.Bytes()[:packetSize]
+	packetHash, err := calcPacketHash(header, b)
+	if err != nil {
+		return nil, buf, err
+	}
+	if packetHash != header.PacketHash {
+		return nil, buf, kerrors.WithKind(nil, ErrMalformedPacket, "Packet body corrupted")
+	}
+	return b, buf, nil
+}
+
+type (
+	byteBuffer struct {
+		buf   []byte
+		read  int
+		write int
+	}
+)
+
+func (b byteBuffer) Bytes() []byte {
+	return b.buf[b.read:b.write]
+}
+
+func (b byteBuffer) Len() int {
+	return b.write - b.read
+}
+
+func (b byteBuffer) Remaining() int {
+	return len(b.buf) - b.write
+}
+
+func (b *byteBuffer) Realloc(size int) {
+	if len(b.buf) >= size {
+		return
+	}
+	next := make([]byte, size)
+	b.write = copy(next, b.buf[b.read:b.write])
+	b.read = 0
+	b.buf = next
+}
+
+func (b *byteBuffer) Compact() {
+	if b.read == 0 {
+		return
+	}
+	b.write = copy(b.buf, b.buf[b.read:b.write])
+	b.read = 0
+}
+
+func (b *byteBuffer) EnsureLen(size int) {
+	// ensure the buffer has enough space
+	b.Realloc(size)
+
+	req := size - b.Len()
+	if req <= 0 {
+		// requested data already exists
+		return
+	}
+	if b.Remaining() >= req {
+		// remaining buffer can satisfy request
+		return
+	}
+	// compact since remaining buffer cannot satisfy request
+	b.Compact()
+}
+
+func (b *byteBuffer) Fill(r io.Reader, size int) error {
+	// ensure remaining buffer can satisfy request
+	b.EnsureLen(size)
+	req := size - b.Len()
+	n, err := io.ReadAtLeast(r, b.buf[b.write:], req)
+	b.write += n
+	return err
+}
+
+func parsePacket(data []byte) {
 }
 
 type (
