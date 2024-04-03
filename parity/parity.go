@@ -102,7 +102,7 @@ const (
 	maxPacketLength     = 1 << 28 // 256MiB
 )
 
-func (h *PacketHeader) MarshalBinary() ([]byte, error) {
+func (h PacketHeader) MarshalBinary() ([]byte, error) {
 	res := make([]byte, HeaderSize)
 	copy(res, []byte(MagicBytes))
 	binary.BigEndian.PutUint32(res[headerVersionOffset:], h.Version)
@@ -137,7 +137,7 @@ func (h *PacketHeader) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (h *PacketHeader) Sum() uint32 {
+func (h PacketHeader) Sum() uint32 {
 	t := crc32.MakeTable(crc32.Castagnoli)
 	var n [8]byte
 	binary.BigEndian.PutUint32(n[:], h.Version)
@@ -150,7 +150,7 @@ func (h *PacketHeader) Sum() uint32 {
 	return s
 }
 
-func (h *PacketHeader) Verify() error {
+func (h PacketHeader) Verify() error {
 	if h.Sum() != h.headerSum {
 		return kerrors.WithKind(nil, ErrMalformedHeader, "Invalid checksum")
 	}
@@ -239,9 +239,12 @@ func writePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byt
 }
 
 type (
-	packetCache struct {
+	streamReader struct {
+		r      io.ReadSeeker
+		buf    byteBuffer
+		pos    int
 		maxPos int
-		m      map[[HeaderHashSize]byte][]cachedCandidate
+		cache  map[[HeaderHashSize]byte][]cachedCandidate
 	}
 
 	cachedCandidate struct {
@@ -250,29 +253,37 @@ type (
 	}
 )
 
-func linearScanPacket(r io.ReadSeeker, match packetHeaderProps, buf *byteBuffer, cache *packetCache) ([]byte, error) {
-	if buf == nil {
-		buf = &byteBuffer{}
-	} else {
-		buf.Reset()
+func newStreamReader(r io.ReadSeeker, buf []byte) *streamReader {
+	return &streamReader{
+		r:      r,
+		buf:    byteBuffer{buf: buf, read: 0, write: 0},
+		pos:    0,
+		maxPos: 0,
+		cache:  map[[HeaderHashSize]byte][]cachedCandidate{},
 	}
-	pos := 0
-	if cache != nil {
-		if _, err := r.Seek(int64(cache.maxPos), io.SeekStart); err != nil {
-			return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
-		}
-		pos = cache.maxPos
+}
+
+func (r *streamReader) Reset() {
+	r.buf.Reset()
+	r.pos = 0
+	r.maxPos = 0
+	clear(r.cache)
+}
+
+func (r *streamReader) linearScanPacket(match packetMatch) ([]byte, error) {
+	if err := r.seek(r.maxPos); err != nil {
+		return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
 	}
 	for {
 		var header PacketHeader
 		var body []byte
 		var err error
-		header, body, err = readPacket(r, match, buf)
+		header, body, err = r.readPacket(match)
 		if err != nil {
 			if errors.Is(err, ErrPacketNoMatch) {
-				if cache != nil && header.Kind == PacketKindParity {
-					cache.m[header.PacketHash] = append(cache.m[header.PacketHash], cachedCandidate{
-						pos:     pos,
+				if header.Kind == PacketKindParity {
+					r.cache[header.PacketHash] = append(r.cache[header.PacketHash], cachedCandidate{
+						pos:     r.pos,
 						invalid: false,
 					})
 				}
@@ -281,34 +292,24 @@ func linearScanPacket(r io.ReadSeeker, match packetHeaderProps, buf *byteBuffer,
 				return nil, err
 			}
 
-			const unsharedMagicBytesSize = len(MagicBytes)
-			// buf read at least full header
-			if err := buf.Advance(unsharedMagicBytesSize); err != nil {
+			// advance only one byte to prevent finding same magic bytes on current
+			// pos if one exists
+			if err := r.advance(1); err != nil {
 				return nil, err
 			}
-			pos += unsharedMagicBytesSize
-			if cache != nil {
-				cache.maxPos = pos
-			}
-			if idx := bytes.Index(buf.Bytes(), []byte(MagicBytes)); idx >= 0 {
-				if err := buf.Advance(idx); err != nil {
+			if idx := bytes.Index(r.buf.Bytes(), []byte(MagicBytes)); idx >= 0 {
+				if err := r.advance(idx); err != nil {
 					return nil, err
-				}
-				pos += idx
-				if cache != nil {
-					cache.maxPos = pos
 				}
 				continue
 			}
+			// keep an overlap amount of bytes because they could be a prefix of a
+			// magic bytes completed by the next buffer read
 			const overlap = len(MagicBytes) - 1
 			// buf read at least full header
-			delta := buf.Len() - overlap
-			if err := buf.Advance(delta); err != nil {
+			delta := r.buf.Len() - overlap
+			if err := r.advance(delta); err != nil {
 				return nil, err
-			}
-			pos += delta
-			if cache != nil {
-				cache.maxPos = pos
 			}
 			continue
 		}
@@ -316,28 +317,49 @@ func linearScanPacket(r io.ReadSeeker, match packetHeaderProps, buf *byteBuffer,
 	}
 }
 
+// advance advances the buffer and file position
+//
+// may only be called from linearScanPacket
+func (r *streamReader) advance(delta int) error {
+	if err := r.buf.Advance(delta); err != nil {
+		return err
+	}
+	r.pos += delta
+	r.maxPos = r.pos
+	return nil
+}
+
+// seek seeks to a particular position in the file
+func (r *streamReader) seek(pos int) error {
+	if _, err := r.r.Seek(int64(pos), io.SeekStart); err != nil {
+		return err
+	}
+	r.pos = pos
+	return nil
+}
+
 type (
-	packetHeaderProps struct {
+	packetMatch struct {
 		kind   PacketKind
 		hash   [HeaderHashSize]byte
 		length uint64
 	}
 )
 
-func readPacket(r io.Reader, match packetHeaderProps, buf *byteBuffer) (PacketHeader, []byte, error) {
-	if buf.Cap() < HeaderSize {
+func (r *streamReader) readPacket(match packetMatch) (PacketHeader, []byte, error) {
+	if r.buf.Cap() < HeaderSize {
 		// allocate more space for abnormally small buffers for performance
-		buf.Realloc(1024 * 1024)
+		r.buf.Realloc(1024 * 1024)
 	}
 
-	if err := buf.Fill(r, HeaderSize); err != nil {
+	if err := r.buf.Fill(r.r, HeaderSize); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return PacketHeader{}, nil, kerrors.WithKind(err, ErrPacketNotFound, "Packet not found")
 		}
 		return PacketHeader{}, nil, kerrors.WithMsg(err, "Failed to read parity file")
 	}
 
-	b := buf.Bytes()
+	b := r.buf.Bytes()
 	var header PacketHeader
 	if err := header.UnmarshalBinary(b); err != nil {
 		return PacketHeader{}, nil, kerrors.WithKind(err, ErrMalformedPacket, "Invalid packet header")
@@ -360,7 +382,7 @@ func readPacket(r io.Reader, match packetHeaderProps, buf *byteBuffer) (PacketHe
 	}
 
 	packetSize := HeaderSize + int(header.Length)
-	if err := buf.Fill(r, packetSize); err != nil {
+	if err := r.buf.Fill(r.r, packetSize); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			// do not return error since EOF for a partial large packet does not
 			// imply that smaller packets do not exist
@@ -369,7 +391,7 @@ func readPacket(r io.Reader, match packetHeaderProps, buf *byteBuffer) (PacketHe
 		return PacketHeader{}, nil, kerrors.WithMsg(err, "Failed to read parity file")
 	}
 
-	b = buf.Bytes()[HeaderSize:packetSize]
+	b = r.buf.Bytes()[HeaderSize:packetSize]
 	packetHash, err := calcPacketHash(header, b)
 	if err != nil {
 		return PacketHeader{}, nil, err
