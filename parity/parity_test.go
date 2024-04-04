@@ -87,6 +87,7 @@ func TestWritePacket(t *testing.T) {
 	buf, err := os.ReadFile(packetfile)
 	assert.NoError(err)
 
+	reader := newStreamReader(bytes.NewReader(buf), nil)
 	for n, i := range packetPayloads {
 		var header PacketHeader
 		assert.NoError(header.UnmarshalBinary(buf))
@@ -104,8 +105,8 @@ func TestWritePacket(t *testing.T) {
 		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 
-		reader := newStreamReader(bytes.NewReader(buf), nil)
-		body, err := reader.linearScanPacket(packetMatch{kind: PacketKindIndex})
+		reader.Reset(bytes.NewReader(buf))
+		body, err := reader.linearScanPacket(PacketMatch{Kind: PacketKindIndex})
 		assert.NoError(err)
 		assert.Equal(i, string(body))
 
@@ -285,8 +286,9 @@ func TestWriteParityFile(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal(hh.Sum(nil), indexPacketHeader.PacketHash[:])
 
-	reader := newStreamReader(bytes.NewReader(parityFile), make([]byte, 256))
-	indexPacketBody, err := reader.linearScanPacket(packetMatch{kind: PacketKindIndex})
+	parityFileReader := bytes.NewReader(parityFile)
+	reader := newStreamReader(parityFileReader, make([]byte, 256))
+	indexPacketBody, err := reader.linearScanPacket(PacketMatch{Kind: PacketKindIndex})
 	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
@@ -302,14 +304,14 @@ func TestWriteParityFile(t *testing.T) {
 	assert.Len(indexPacket.GetBlockSet().GetParity(), 9)
 
 	for _, i := range indexPacket.GetBlockSet().GetParity() {
-		reader.Reset()
+		reader.Reset(parityFileReader)
 
 		// ensure that all parity file packets are present
 		var h [HeaderHashSize]byte
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
-		parityPacketBody, err = reader.linearScanPacket(packetMatch{kind: PacketKindParity, hash: h, length: blockSize})
+		parityPacketBody, err = reader.linearScanPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}

@@ -265,11 +265,53 @@ func newStreamReader(r io.ReadSeeker, buf []byte) *streamReader {
 	}
 }
 
-func (r *streamReader) Reset() {
+func (r *streamReader) Reset(reader io.ReadSeeker) {
 	r.buf.Reset()
 	r.pos = 0
 	r.maxPos = 0
 	clear(r.parityCache)
+	r.r = reader
+}
+
+func (r *streamReader) GetPacket(match PacketMatch) ([]byte, error) {
+	if match.Kind == PacketKindIndex {
+		for n, i := range r.indexCache {
+			if i.invalid {
+				continue
+			}
+			if err := r.seek(i.pos); err != nil {
+				return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
+			}
+			_, body, err := r.readPacket(match)
+			if err != nil {
+				if errors.Is(err, ErrPacketNoMatch) || errors.Is(err, ErrMalformedPacket) {
+					r.indexCache[n].invalid = true
+					continue
+				}
+				return nil, err
+			}
+			return body, nil
+		}
+	} else if match.Kind == PacketKindParity && match.Hash != emptyHeaderHash {
+		for n, i := range r.parityCache[match.Hash] {
+			if i.invalid {
+				continue
+			}
+			if err := r.seek(i.pos); err != nil {
+				return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
+			}
+			_, body, err := r.readPacket(match)
+			if err != nil {
+				if errors.Is(err, ErrPacketNoMatch) || errors.Is(err, ErrMalformedPacket) {
+					r.parityCache[match.Hash][n].invalid = true
+					continue
+				}
+				return nil, err
+			}
+			return body, nil
+		}
+	}
+	return r.linearScanPacket(match)
 }
 
 func (r *streamReader) cachePacket(header PacketHeader, pos int) {
@@ -286,7 +328,7 @@ func (r *streamReader) cachePacket(header PacketHeader, pos int) {
 	}
 }
 
-func (r *streamReader) linearScanPacket(match packetMatch) ([]byte, error) {
+func (r *streamReader) linearScanPacket(match PacketMatch) ([]byte, error) {
 	if err := r.seek(r.maxPos); err != nil {
 		return nil, kerrors.WithMsg(err, "Failed seeking to parity file")
 	}
@@ -356,14 +398,14 @@ func (r *streamReader) seek(pos int) error {
 }
 
 type (
-	packetMatch struct {
-		kind   PacketKind
-		hash   [HeaderHashSize]byte
-		length uint64
+	PacketMatch struct {
+		Kind   PacketKind
+		Hash   [HeaderHashSize]byte
+		Length uint64
 	}
 )
 
-func (r *streamReader) readPacket(match packetMatch) (PacketHeader, []byte, error) {
+func (r *streamReader) readPacket(match PacketMatch) (PacketHeader, []byte, error) {
 	if r.buf.Cap() < HeaderSize {
 		// allocate more space for abnormally small buffers for performance
 		r.buf.Realloc(1024 * 1024)
@@ -388,13 +430,13 @@ func (r *streamReader) readPacket(match packetMatch) (PacketHeader, []byte, erro
 		return PacketHeader{}, nil, kerrors.WithKind(nil, ErrMalformedPacket, "Packet exceeds max size")
 	}
 
-	if header.Kind != match.kind {
+	if header.Kind != match.Kind {
 		return header, nil, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet kind does not match")
 	}
-	if match.hash != emptyHeaderHash && header.PacketHash != match.hash {
+	if match.Hash != emptyHeaderHash && header.PacketHash != match.Hash {
 		return header, nil, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet hash does not match")
 	}
-	if match.length != 0 && header.Length != match.length {
+	if match.Length != 0 && header.Length != match.Length {
 		return header, nil, kerrors.WithKind(nil, ErrPacketNoMatch, "Packet length does not match")
 	}
 
