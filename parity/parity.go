@@ -269,6 +269,7 @@ func (r *streamReader) Reset(reader io.ReadSeeker) {
 	r.buf.Reset()
 	r.pos = 0
 	r.maxPos = 0
+	clear(r.indexCache)
 	clear(r.parityCache)
 	r.r = reader
 }

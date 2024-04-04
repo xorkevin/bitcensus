@@ -106,7 +106,7 @@ func TestWritePacket(t *testing.T) {
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 
 		reader.Reset(bytes.NewReader(buf))
-		body, err := reader.linearScanPacket(PacketMatch{Kind: PacketKindIndex})
+		body, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
 		assert.NoError(err)
 		assert.Equal(i, string(body))
 
@@ -288,7 +288,7 @@ func TestWriteParityFile(t *testing.T) {
 
 	parityFileReader := bytes.NewReader(parityFile)
 	reader := newStreamReader(parityFileReader, make([]byte, 256))
-	indexPacketBody, err := reader.linearScanPacket(PacketMatch{Kind: PacketKindIndex})
+	indexPacketBody, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
 	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
@@ -311,7 +311,7 @@ func TestWriteParityFile(t *testing.T) {
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
-		parityPacketBody, err = reader.linearScanPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
+		parityPacketBody, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}
