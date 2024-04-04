@@ -315,4 +315,15 @@ func TestWriteParityFile(t *testing.T) {
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}
+
+	for _, i := range indexPacket.GetBlockSet().GetParity() {
+		// use packet cache
+		var h [HeaderHashSize]byte
+		copy(h[:], i.GetHash())
+		var parityPacketBody []byte
+		var err error
+		parityPacketBody, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
+		assert.NoError(err)
+		assert.Len(parityPacketBody, int(blockSize))
+	}
 }

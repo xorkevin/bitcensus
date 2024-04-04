@@ -391,6 +391,7 @@ func (r *streamReader) advance(delta int) error {
 
 // seek seeks to a particular position in the file
 func (r *streamReader) seek(pos int) error {
+	r.buf.Reset()
 	if _, err := r.r.Seek(int64(pos), io.SeekStart); err != nil {
 		return err
 	}
