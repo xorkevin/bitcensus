@@ -240,14 +240,15 @@ func writePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byt
 
 type (
 	streamReader struct {
-		r      io.ReadSeeker
-		buf    byteBuffer
-		pos    int
-		maxPos int
-		cache  map[[HeaderHashSize]byte][]cachedCandidate
+		r           io.ReadSeeker
+		buf         byteBuffer
+		pos         int
+		maxPos      int
+		indexCache  []cacheCandidate
+		parityCache map[[HeaderHashSize]byte][]cacheCandidate
 	}
 
-	cachedCandidate struct {
+	cacheCandidate struct {
 		pos     int
 		invalid bool
 	}
@@ -255,11 +256,12 @@ type (
 
 func newStreamReader(r io.ReadSeeker, buf []byte) *streamReader {
 	return &streamReader{
-		r:      r,
-		buf:    byteBuffer{buf: buf, read: 0, write: 0},
-		pos:    0,
-		maxPos: 0,
-		cache:  map[[HeaderHashSize]byte][]cachedCandidate{},
+		r:           r,
+		buf:         byteBuffer{buf: buf, read: 0, write: 0},
+		pos:         0,
+		maxPos:      0,
+		indexCache:  nil,
+		parityCache: map[[HeaderHashSize]byte][]cacheCandidate{},
 	}
 }
 
@@ -267,7 +269,21 @@ func (r *streamReader) Reset() {
 	r.buf.Reset()
 	r.pos = 0
 	r.maxPos = 0
-	clear(r.cache)
+	clear(r.parityCache)
+}
+
+func (r *streamReader) cachePacket(header PacketHeader, pos int) {
+	if header.Kind == PacketKindIndex {
+		r.indexCache = append(r.indexCache, cacheCandidate{
+			pos:     pos,
+			invalid: false,
+		})
+	} else if header.Kind == PacketKindParity {
+		r.parityCache[header.PacketHash] = append(r.parityCache[header.PacketHash], cacheCandidate{
+			pos:     pos,
+			invalid: false,
+		})
+	}
 }
 
 func (r *streamReader) linearScanPacket(match packetMatch) ([]byte, error) {
@@ -281,12 +297,7 @@ func (r *streamReader) linearScanPacket(match packetMatch) ([]byte, error) {
 		header, body, err = r.readPacket(match)
 		if err != nil {
 			if errors.Is(err, ErrPacketNoMatch) {
-				if header.Kind == PacketKindParity {
-					r.cache[header.PacketHash] = append(r.cache[header.PacketHash], cachedCandidate{
-						pos:     r.pos,
-						invalid: false,
-					})
-				}
+				r.cachePacket(header, r.pos)
 			} else if errors.Is(err, ErrMalformedPacket) {
 			} else {
 				return nil, err
@@ -312,6 +323,12 @@ func (r *streamReader) linearScanPacket(match packetMatch) ([]byte, error) {
 				return nil, err
 			}
 			continue
+		}
+		r.cachePacket(header, r.pos)
+		// may only advance length of packet in this scenario because packet has
+		// been verified
+		if err := r.advance(HeaderSize + int(header.Length)); err != nil {
+			return body, err
 		}
 		return body, nil
 	}
