@@ -106,7 +106,7 @@ func TestWritePacket(t *testing.T) {
 		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
 
 		reader.Reset(bytes.NewReader(buf))
-		body, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
+		body, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
 		assert.NoError(err)
 		assert.Equal(i, string(body))
 
@@ -193,15 +193,13 @@ func TestPartitionBlocks(t *testing.T) {
 			layout, err := partitionBlocks(tc.fileSize, tc.cfg)
 			assert.NoError(err)
 			assert.Equal(tc.exp, layout)
-			if layout.FileSize > 0 {
-				layout2, err := partitionBlocks(layout.FileSize, ShardConfig{
-					BlockSize:        layout.BlockSize,
-					ShardCount:       layout.ShardCount,
-					ParityShardCount: layout.ParityShardCount,
-				})
-				assert.NoError(err)
-				assert.Equal(tc.exp, layout2)
-			}
+			layout2, err := partitionBlocks(layout.FileSize, ShardConfig{
+				BlockSize:        layout.BlockSize,
+				ShardCount:       layout.ShardCount,
+				ParityShardCount: layout.ParityShardCount,
+			})
+			assert.NoError(err)
+			assert.Equal(layout, layout2)
 		})
 	}
 }
@@ -288,7 +286,7 @@ func TestWriteParityFile(t *testing.T) {
 
 	parityFileReader := bytes.NewReader(parityFile)
 	reader := newStreamReader(parityFileReader, make([]byte, 256))
-	indexPacketBody, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
+	indexPacketBody, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
 	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
@@ -311,7 +309,7 @@ func TestWriteParityFile(t *testing.T) {
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
-		parityPacketBody, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
+		parityPacketBody, _, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}
@@ -322,7 +320,7 @@ func TestWriteParityFile(t *testing.T) {
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
-		parityPacketBody, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
+		parityPacketBody, _, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
 	}

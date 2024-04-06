@@ -19,6 +19,7 @@ func (e errShape) Error() string {
 type (
 	Encoder interface {
 		Encode(data, parity [][]byte) error
+		ReconstructData(data, parity [][]byte) error
 	}
 
 	Matrix struct {
@@ -70,6 +71,32 @@ func (m *Matrix) Encode(data, parity [][]byte) error {
 	}
 	if err := m.enc.Encode(m.shardWork); err != nil {
 		return kerrors.WithMsg(err, "Failed to reed solomon encode data")
+	}
+	return nil
+}
+
+func (m *Matrix) ReconstructData(data, parity [][]byte) error {
+	if len(data) != m.dataShards {
+		return kerrors.WithKind(nil, ErrShape, "Invalid number of data shards")
+	}
+	if len(parity) != m.parityShards {
+		return kerrors.WithKind(nil, ErrShape, "Invalid number of parity shards")
+	}
+	blockSize := len(data[0])
+	for n, i := range data {
+		if len(i) != blockSize && len(i) != 0 {
+			return kerrors.WithKind(nil, ErrShape, "Varying data block size")
+		}
+		m.shardWork[n] = i
+	}
+	for n, i := range parity {
+		if len(i) != blockSize && len(i) != 0 {
+			return kerrors.WithKind(nil, ErrShape, "Varying parity block size")
+		}
+		m.shardWork[m.dataShards+n] = i
+	}
+	if err := m.enc.ReconstructData(m.shardWork); err != nil {
+		return kerrors.WithMsg(err, "Failed to reed solomon reconstruct data")
 	}
 	return nil
 }
