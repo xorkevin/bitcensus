@@ -37,7 +37,6 @@ type (
 		force      bool
 		dryRun     bool
 		before     string
-		upgrade    bool
 		repo       string
 	}
 )

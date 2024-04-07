@@ -11,7 +11,6 @@ require (
 	golang.org/x/crypto v0.20.0
 	google.golang.org/protobuf v1.32.0
 	xorkevin.dev/forge v0.5.3
-	xorkevin.dev/hunter2 v0.2.16
 	xorkevin.dev/kerrors v0.1.5
 	xorkevin.dev/kfs v0.1.2
 	xorkevin.dev/klog v0.1.0
@@ -36,7 +35,6 @@ require (
 	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/zeebo/blake3 v0.2.3 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect

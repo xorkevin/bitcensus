@@ -35,7 +35,6 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 		DisableAutoGenTag: true,
 	}
 	verifyCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
-	verifyCmd.PersistentFlags().BoolVarP(&c.censusFlags.upgrade, "upgrade", "u", false, "verify old hash and upgrade to new hash")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.before, "before", "b", "168h", "age of files to verify (\"now\" will verify all)")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name (empty means all)")
 	cmd.AddCommand(verifyCmd)
@@ -111,8 +110,7 @@ func (c *Cmd) execVerify(cmd *cobra.Command, args []string) {
 		klog.AString("before", before.Format(time.RFC3339)),
 	)
 	flags := census.VerifyFlags{
-		Before:  before,
-		Upgrade: c.censusFlags.upgrade,
+		Before: before,
 	}
 	if c.censusFlags.repo != "" {
 		if err := cen.VerifyRepo(context.Background(), c.censusFlags.repo, flags); err != nil {

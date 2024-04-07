@@ -1,7 +1,9 @@
 package census
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,15 +15,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
+	"golang.org/x/crypto/blake2b"
 	"xorkevin.dev/bitcensus/census/censusdbmodel"
 	"xorkevin.dev/bitcensus/dbsql"
 	"xorkevin.dev/bitcensus/util/bytefmt"
-	"xorkevin.dev/hunter2/h2streamhash"
-	"xorkevin.dev/hunter2/h2streamhash/blake2bstream"
-	"xorkevin.dev/hunter2/h2streamhash/blake3stream"
-	"xorkevin.dev/hunter2/h2streamhash/sha256stream"
 	"xorkevin.dev/kerrors"
 	"xorkevin.dev/kfs"
 	"xorkevin.dev/klog"
@@ -51,12 +51,9 @@ func (e *ChecksumError) Error() string {
 
 type (
 	Census struct {
-		log           *klog.LevelLogger
-		dataDir       string
-		cfg           SyncConfig
-		defaultHasher h2streamhash.Hasher
-		hashers       map[string]h2streamhash.Hasher
-		verifier      *h2streamhash.Verifier
+		log     *klog.LevelLogger
+		dataDir string
+		cfg     SyncConfig
 	}
 
 	RepoDirConfig struct {
@@ -66,9 +63,8 @@ type (
 	}
 
 	RepoConfig struct {
-		Path    string          `mapstructure:"path"`
-		Dirs    []RepoDirConfig `mapstructure:"dirs"`
-		HashAlg string          `mapstructure:"hash_alg"`
+		Path string          `mapstructure:"path"`
+		Dirs []RepoDirConfig `mapstructure:"dirs"`
 	}
 
 	SyncConfig map[string]RepoConfig
@@ -80,31 +76,15 @@ type (
 	}
 
 	VerifyFlags struct {
-		Before  time.Time
-		Upgrade bool
+		Before time.Time
 	}
 )
 
 func New(log klog.Logger, dataDir string, cfg SyncConfig) *Census {
-	sha256sum := sha256stream.NewHasher(sha256stream.Config{})
-	b2sum := blake2bstream.NewHasher(blake2bstream.Config{})
-	b3sum := blake3stream.NewHasher(blake3stream.Config{})
-	algs := map[string]h2streamhash.Hasher{
-		sha256sum.ID(): sha256sum,
-		b2sum.ID():     b2sum,
-		b3sum.ID():     b3sum,
-	}
-	verifier := h2streamhash.NewVerifier()
-	verifier.Register(sha256sum)
-	verifier.Register(b2sum)
-	verifier.Register(b3sum)
 	return &Census{
-		log:           klog.NewLevelLogger(log),
-		dataDir:       dataDir,
-		cfg:           cfg,
-		defaultHasher: b2sum,
-		hashers:       algs,
-		verifier:      verifier,
+		log:     klog.NewLevelLogger(log),
+		dataDir: dataDir,
+		cfg:     cfg,
 	}
 }
 
@@ -174,11 +154,6 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
-	hasher := c.defaultHasher
-	if cfg.HashAlg != "" {
-		hasher = c.hashers[cfg.HashAlg]
-	}
-
 	files, d, err := c.getFilesRepo(name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
@@ -210,7 +185,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 				klog.AString("repopath", cfg.Path),
 				klog.AString("repofilepath", p),
 			)
-			if err := c.syncRepoFileFS(ctx, files, hasher, rootDir, p, flags); err != nil {
+			if err := c.syncRepoFileFS(ctx, files, rootDir, p, flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
@@ -226,7 +201,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
-			if err := c.syncRepoDir(ctx, files, hasher, rootDir, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
+			if err := c.syncRepoDir(ctx, files, rootDir, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync dir %s", p))
 			}
 		}
@@ -266,7 +241,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 	return nil
 }
 
-func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, hasher h2streamhash.Hasher, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, flags SyncFlags) error {
+func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, flags SyncFlags) error {
 	if !entry.IsDir() {
 		if !match.MatchString(p) {
 			c.log.Debug(ctx, "Skipping unmatched file",
@@ -275,7 +250,7 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, hash
 			return nil
 		}
 
-		if err := c.syncRepoFileFS(ctx, files, hasher, dir, p, flags); err != nil {
+		if err := c.syncRepoFileFS(ctx, files, dir, p, flags); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 		}
 		return nil
@@ -288,14 +263,14 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, hash
 		klog.AString("path", p),
 	)
 	for _, i := range entries {
-		if err := c.syncRepoDir(ctx, files, hasher, dir, match, path.Join(p, i.Name()), i, flags); err != nil {
+		if err := c.syncRepoDir(ctx, files, dir, match, path.Join(p, i.Name()), i, flags); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, hasher h2streamhash.Hasher, dir fs.FS, p string, flags SyncFlags) error {
+func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, p string, flags SyncFlags) error {
 	info, err := fs.Stat(dir, p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -327,7 +302,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, h
 	)
 	if !flags.DryRun {
 		start := time.Now()
-		h, err := c.hashFile(hasher, dir, p, existingEntry)
+		h, err := c.hashFile(dir, p)
 		if err != nil {
 			return kerrors.WithMsg(err, "Failed to hash file")
 		}
@@ -358,28 +333,35 @@ func humanHashRate(size int64, duration time.Duration) string {
 	return bytefmt.ToString(float64(size)/duration.Seconds()) + "/s"
 }
 
-func (c *Census) hashFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry *censusdbmodel.Model) (_ string, retErr error) {
-	var h h2streamhash.Hash
-	if existingEntry != nil {
-		var err error
-		h, err = c.verifier.Verify(existingEntry.Hash)
-		if err != nil {
-			return "", kerrors.WithMsg(err, "Failed creating hash")
-		}
-	} else {
-		var err error
-		h, err = hasher.Hash()
-		if err != nil {
-			return "", kerrors.WithMsg(err, "Failed creating hash")
-		}
+func (c *Census) hashFile(dir fs.FS, name string) (_ string, retErr error) {
+	h, err := blake2b.New512(nil)
+	if err != nil {
+		return "", kerrors.WithMsg(err, "Failed creating hash")
 	}
 	if err := c.readFile(h, dir, name); err != nil {
 		return "", err
 	}
-	if err := h.Close(); err != nil {
-		return "", kerrors.WithMsg(err, "Failed closing stream hash")
+	return hashBytesToStr(h.Sum(nil)), nil
+}
+
+const (
+	hashPrefix = "$b2b$"
+)
+
+func hashBytesToStr(b []byte) string {
+	return hashPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+func parseHashStrToBytes(s string) ([]byte, error) {
+	s, ok := strings.CutPrefix(s, hashPrefix)
+	if !ok {
+		return nil, kerrors.WithMsg(nil, "Invalid hash prefix")
 	}
-	return h.Sum(), nil
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, kerrors.WithMsg(nil, "Malformed hash string")
+	}
+	return b, nil
 }
 
 func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
@@ -403,11 +385,6 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 	cfg, ok := c.cfg[name]
 	if !ok {
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
-	}
-
-	hasher := c.defaultHasher
-	if cfg.HashAlg != "" {
-		hasher = c.hashers[cfg.HashAlg]
 	}
 
 	files, d, err := c.getFilesRepo(name, "rw")
@@ -454,13 +431,13 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
 			)
 			start := time.Now()
-			match, h, err := c.verifyFile(hasher, rootDir, i.Name, i, flags.Upgrade)
+			match, err := c.verifyFile(rootDir, i.Name, i)
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to verify file %s", i.Name))
 			}
 			duration := time.Since(start)
 			if match {
-				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), h)); err != nil {
+				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), i.Hash)); err != nil {
 					return kerrors.WithMsg(err, "Failed updating file entry")
 				}
 				c.log.Info(ctx, "Verified file",
@@ -493,35 +470,19 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 	return nil
 }
 
-func (c *Census) verifyFile(hasher h2streamhash.Hasher, dir fs.FS, name string, existingEntry censusdbmodel.Model, force bool) (_ bool, _ string, retErr error) {
-	vh, err := c.verifier.Verify(existingEntry.Hash)
+func (c *Census) verifyFile(dir fs.FS, name string, existingEntry censusdbmodel.Model) (_ bool, retErr error) {
+	b, err := parseHashStrToBytes(existingEntry.Hash)
 	if err != nil {
-		return false, "", kerrors.WithMsg(err, "Failed creating hash")
+		return false, err
 	}
-	h := vh
-	var w io.Writer = vh
-	if force && hasher.ID() != vh.ID() {
-		var err error
-		h, err = hasher.Hash()
-		if err != nil {
-			return false, "", kerrors.WithMsg(err, "Failed creating hash")
-		}
-		w = io.MultiWriter(vh, h)
-	}
-	if err := c.readFile(w, dir, name); err != nil {
-		return false, "", err
-	}
-	if err := vh.Close(); err != nil {
-		return false, "", kerrors.WithMsg(err, "Failed closing stream hash")
-	}
-	if err := h.Close(); err != nil {
-		return false, "", kerrors.WithMsg(err, "Failed closing stream hash")
-	}
-	ok, err := vh.Verify(existingEntry.Hash)
+	h, err := blake2b.New512(nil)
 	if err != nil {
-		return false, "", kerrors.WithMsg(err, "Failed verifying checksum")
+		return false, kerrors.WithMsg(err, "Failed creating hash")
 	}
-	return ok, h.Sum(), nil
+	if err := c.readFile(h, dir, name); err != nil {
+		return false, err
+	}
+	return bytes.Equal(b, h.Sum(nil)), nil
 }
 
 func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error) {
@@ -631,15 +592,13 @@ func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, overr
 			if err := files.Insert(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed adding file entry")
 			}
-		} else {
-			if override {
-				m.Size = entry.Size
-				m.ModTime = entry.ModTime
-				m.Hash = entry.Checksum
-				m.LastVerifiedAt = 0
-				if err := files.Update(ctx, m); err != nil {
-					return kerrors.WithMsg(err, "Failed updating file entry")
-				}
+		} else if override {
+			m.Size = entry.Size
+			m.ModTime = entry.ModTime
+			m.Hash = entry.Checksum
+			m.LastVerifiedAt = 0
+			if err := files.Update(ctx, m); err != nil {
+				return kerrors.WithMsg(err, "Failed updating file entry")
 			}
 		}
 	}
