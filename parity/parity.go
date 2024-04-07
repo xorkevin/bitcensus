@@ -762,6 +762,11 @@ type (
 		io.WriteSeeker
 		Truncate(size int64) error
 	}
+
+	ReadWriteSeekTruncater interface {
+		io.ReadWriteSeeker
+		Truncate(size int64) error
+	}
 )
 
 func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig) ([HeaderHashSize]byte, [HeaderHashSize]byte, error) {
@@ -868,7 +873,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed marshalling index packet")
 	}
-	if len(indexPacketBytes) != int(packetSizes.indexBody) {
+	if len(indexPacketBytes) > int(packetSizes.indexBody) {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Inconsistent marshalled index packet size")
 	}
 	for i := range layout.ParityShardCount {
@@ -889,13 +894,13 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	return fileHash, indexPacketHeaderHash, nil
 }
 
-func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteSeeker, fileHash [HeaderHashSize]byte) error {
+func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash, indexPacketHeaderHash [HeaderHashSize]byte, fileSize uint64) error {
 	l := klog.NewLevelLogger(log)
 
 	reader := newStreamReader(parity, nil)
 
 	var indexBody []byte
-	if b, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex}); err != nil {
+	if b, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash}); err != nil {
 		return kerrors.WithMsg(err, "Failed to find index packet")
 	} else {
 		indexBody = slices.Clone(b)
@@ -909,11 +914,18 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteS
 	if !bytes.Equal(fileHash[:], indexPacket.GetInputFile().GetHash()) {
 		return kerrors.WithMsg(nil, "Mismatched file hash")
 	}
-	fileSize := indexPacket.GetInputFile().GetSize()
+	if indexPacket.GetInputFile().GetSize() != fileSize {
+		return kerrors.WithMsg(nil, "Mismatched file size")
+	}
+
 	if dataFileSize, err := data.Seek(0, io.SeekEnd); err != nil {
 		return kerrors.WithMsg(err, "Failed seeking to end of data file")
 	} else if uint64(dataFileSize) != fileSize {
-		return kerrors.WithMsg(nil, "Mismatched file size")
+		l.Warn(ctx, "Mismatched file size")
+
+		if err := data.Truncate(int64(fileSize)); err != nil {
+			return kerrors.WithMsg(err, "Failed resizing data file")
+		}
 	}
 	if _, err := data.Seek(0, io.SeekStart); err != nil {
 		return kerrors.WithMsg(err, "Failed seeking to beginning of data file")
