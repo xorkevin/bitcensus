@@ -82,21 +82,28 @@ func (m *Matrix) ReconstructData(data, parity [][]byte) error {
 	if len(parity) != m.parityShards {
 		return kerrors.WithKind(nil, ErrShape, "Invalid number of parity shards")
 	}
-	blockSize := len(data[0])
+	blockSize := 0
 	for n, i := range data {
-		if len(i) != blockSize && len(i) != 0 {
+		if blockSize == 0 {
+			blockSize = len(i)
+		} else if len(i) != blockSize && len(i) != 0 {
 			return kerrors.WithKind(nil, ErrShape, "Varying data block size")
 		}
 		m.shardWork[n] = i
 	}
 	for n, i := range parity {
-		if len(i) != blockSize && len(i) != 0 {
+		if blockSize == 0 {
+			blockSize = len(i)
+		} else if len(i) != blockSize && len(i) != 0 {
 			return kerrors.WithKind(nil, ErrShape, "Varying parity block size")
 		}
 		m.shardWork[m.dataShards+n] = i
 	}
 	if err := m.enc.ReconstructData(m.shardWork); err != nil {
 		return kerrors.WithMsg(err, "Failed to reed solomon reconstruct data")
+	}
+	for n := range data {
+		data[n] = m.shardWork[n]
 	}
 	return nil
 }

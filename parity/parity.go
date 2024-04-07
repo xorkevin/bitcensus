@@ -655,8 +655,15 @@ func partitionBlocks(fileSize uint64, cfg ShardConfig) (*blockLayout, error) {
 	return &layout, nil
 }
 
+func (l blockLayout) calcStripeDataBlocks(stripeIdx int) int {
+	if stripeIdx >= int(l.NumLastShardBlocks) {
+		return int(l.ShardCount) - 1
+	}
+	return int(l.ShardCount)
+}
+
 func (l blockLayout) isLastShardEmptyBlock(shardIdx int, stripeIdx int) bool {
-	return stripeIdx >= int(l.NumLastShardBlocks) && shardIdx == int(l.ShardCount-1)
+	return stripeIdx >= int(l.NumLastShardBlocks) && shardIdx == int(l.ShardCount)-1
 }
 
 func (l blockLayout) calcBlockIdx(shardIdx int, stripeIdx int) int {
@@ -668,7 +675,7 @@ func (l blockLayout) calcDataBlockOffset(blockIdx int) int64 {
 }
 
 func (l blockLayout) isLastDataBlock(blockIdx int) bool {
-	return blockIdx == int(l.NumBlocks-1)
+	return blockIdx == int(l.NumBlocks)-1
 }
 
 func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
@@ -688,18 +695,18 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	}
 }
 
-func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, blockSize, lastBlockSize uint64) ([HeaderHashSize]byte, error) {
+func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout blockLayout) ([HeaderHashSize]byte, error) {
 	fileHasher, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
 	}
-	if blockSize > 0 {
-		buf := make([]byte, blockSize)
+	if layout.BlockSize > 0 {
+		buf := make([]byte, layout.BlockSize)
 		for blockIdx := range indexPacket.BlockSet.Input {
 			clear(buf)
 			b := buf
-			if blockIdx == len(indexPacket.BlockSet.Input)-1 {
-				b = b[:lastBlockSize]
+			if layout.isLastDataBlock(blockIdx) {
+				b = b[:layout.LastBlockSize]
 			}
 			if _, err := io.ReadFull(data, b); err != nil {
 				return emptyHeaderHash, kerrors.WithMsg(err, "Failed reading input file")
@@ -802,7 +809,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		indexPacket.BlockSet = initIndexBlocks(layout.NumBlocks, layout.NumParityBlocks)
 	}
 
-	fileHash, err := hashDataBlocks(&indexPacket, data, layout.BlockSize, layout.LastBlockSize)
+	fileHash, err := hashDataBlocks(&indexPacket, data, *layout)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
@@ -960,7 +967,10 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 	if dataFileSize, err := data.Seek(0, io.SeekEnd); err != nil {
 		return kerrors.WithMsg(err, "Failed seeking to end of data file")
 	} else if uint64(dataFileSize) != fileSize {
-		l.Warn(ctx, "Mismatched file size")
+		l.Warn(ctx, "Data file size differs",
+			klog.AUint64("expected", fileSize),
+			klog.AInt64("actual", dataFileSize),
+		)
 
 		if err := data.Truncate(int64(fileSize)); err != nil {
 			return kerrors.WithMsg(err, "Failed resizing data file")
@@ -1027,7 +1037,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 					return kerrors.WithMsg(err, "Failed seeking data file")
 				}
 				b := i
-				if blockIdx == len(indexPacket.BlockSet.Input)-1 {
+				if layout.isLastDataBlock(blockIdx) {
 					b = i[:layout.LastBlockSize]
 				}
 				if _, err := io.ReadFull(data, b); err != nil {
@@ -1056,11 +1066,13 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 				}
 			}
 
-			hasCorruptedData := validDataShards.Size() != len(dataBlocks)
+			stripeDataBlockCount := layout.calcStripeDataBlocks(stripeIdx)
+			hasCorruptedData := validDataShards.Size() != stripeDataBlockCount
 			if hasCorruptedData {
 				l.Warn(ctx, "Stripe has corrupted blocks",
 					klog.AString("kind", "data"),
 					klog.AInt("stripe", stripeIdx),
+					klog.AInt("count", stripeDataBlockCount-validDataShards.Size()),
 				)
 			} else {
 				l.Debug(ctx, "Stripe blocks ok",
@@ -1100,6 +1112,12 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 				if parityPos == packetSizes.calcParityPacketOffset(shardIdx, stripeIdx) {
 					validParityBlocks.Add(blockIdx)
 					okParityCount++
+					l.Debug(ctx, "Block ok",
+						klog.AString("kind", "parity"),
+						klog.AInt("idx", blockIdx),
+						klog.AInt("shard", shardIdx),
+						klog.AInt("stripe", stripeIdx),
+					)
 				} else {
 					l.Warn(ctx, "Block misplaced",
 						klog.AString("kind", "parity"),
@@ -1121,6 +1139,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 				l.Warn(ctx, "Stripe has corrupted blocks",
 					klog.AString("kind", "parity"),
 					klog.AInt("stripe", stripeIdx),
+					klog.AInt("count", len(parityBlocks)-okParityCount),
 				)
 			}
 
@@ -1147,6 +1166,9 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 			}
 
 			for shardIdx, i := range dataBlocks {
+				if layout.isLastShardEmptyBlock(shardIdx, stripeIdx) {
+					break
+				}
 				if validDataShards.Has(shardIdx) {
 					// skip valid data blocks
 					continue
@@ -1154,7 +1176,8 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 
 				// write reconstructed data block
 				blockIdx := layout.calcBlockIdx(shardIdx, stripeIdx)
-				if _, err := data.Seek(layout.calcDataBlockOffset(blockIdx), io.SeekStart); err != nil {
+				pos := layout.calcDataBlockOffset(blockIdx)
+				if _, err := data.Seek(pos, io.SeekStart); err != nil {
 					return kerrors.WithMsg(err, "Failed seeking data file")
 				}
 				b := i
@@ -1166,6 +1189,13 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 				} else if n != len(b) {
 					return kerrors.WithMsg(io.ErrShortWrite, "Short write")
 				}
+				l.Info(ctx, "Fixed data block",
+					klog.AInt("idx", blockIdx),
+					klog.AInt("shard", shardIdx),
+					klog.AInt("stripe", stripeIdx),
+					klog.AInt64("pos", pos),
+					klog.AInt("bytes", len(b)),
+				)
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package parity
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
 	"xorkevin.dev/bitcensus/pb/parityv0"
+	"xorkevin.dev/klog"
 )
 
 func TestPacketHeader(t *testing.T) {
@@ -221,14 +223,14 @@ func TestWriteParityFile(t *testing.T) {
 		parityShardCount uint64 = 3
 	)
 	var expectedHash [HeaderHashSize]byte
+	var dataFile [fileSize]byte
 	{
 		h, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil)
 		assert.NoError(err)
-		var buf [fileSize]byte
-		_, err = io.ReadFull(h, buf[:])
+		_, err = io.ReadFull(h, dataFile[:])
 		assert.NoError(err)
-		assert.NoError(os.WriteFile(inpFileName, buf[:], 0o666))
-		expectedHash = blake2b.Sum512(buf[:])
+		assert.NoError(os.WriteFile(inpFileName, dataFile[:], 0o666))
+		expectedHash = blake2b.Sum512(dataFile[:])
 	}
 
 	fileHash, indexPacketHeaderHash, err := func() (_, _ [HeaderHashSize]byte, retErr error) {
@@ -323,5 +325,83 @@ func TestWriteParityFile(t *testing.T) {
 		parityPacketBody, _, err = reader.GetPacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: blockSize})
 		assert.NoError(err)
 		assert.Len(parityPacketBody, int(blockSize))
+	}
+
+	var emptyBytes [512]byte
+	for i := int64(0); i < int64(fileSize); i += 512 {
+		assert.NoError(func() (retErr error) {
+			inp, err := os.OpenFile(inpFileName, os.O_RDWR, 0)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := inp.Close(); err != nil {
+					retErr = errors.Join(retErr, err)
+				}
+			}()
+			if i >= 512 {
+				if _, err := inp.Seek(i-512, io.SeekStart); err != nil {
+					return err
+				}
+				_, err = inp.Write(emptyBytes[:])
+				if err != nil {
+					return err
+				}
+			}
+			parity, err := os.OpenFile(parityFileName, os.O_RDWR, 0)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := parity.Close(); err != nil {
+					retErr = errors.Join(retErr, err)
+				}
+			}()
+			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, indexPacketHeaderHash, fileSize); err != nil {
+				return err
+			}
+			return nil
+		}())
+		b, err := os.ReadFile(inpFileName)
+		assert.NoError(err)
+		assert.Equal(dataFile[:], b)
+	}
+	for i := int64(0); i < int64(len(parityFile)); i += 512 {
+		assert.NoError(func() (retErr error) {
+			inp, err := os.OpenFile(inpFileName, os.O_RDWR, 0)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := inp.Close(); err != nil {
+					retErr = errors.Join(retErr, err)
+				}
+			}()
+			parity, err := os.OpenFile(parityFileName, os.O_RDWR, 0)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := parity.Close(); err != nil {
+					retErr = errors.Join(retErr, err)
+				}
+			}()
+			if i >= 512 {
+				if _, err := parity.Seek(i-512, io.SeekStart); err != nil {
+					return err
+				}
+				_, err = parity.Write(emptyBytes[:])
+				if err != nil {
+					return err
+				}
+			}
+			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, indexPacketHeaderHash, fileSize); err != nil {
+				return err
+			}
+			return nil
+		}())
+		b, err := os.ReadFile(parityFileName)
+		assert.NoError(err)
+		assert.Equal(parityFile, b)
 	}
 }
