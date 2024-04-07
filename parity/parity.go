@@ -1109,9 +1109,9 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 					continue
 				}
 				copy(i, parityBody)
+				okParityCount++
 				if parityPos == packetSizes.calcParityPacketOffset(shardIdx, stripeIdx) {
 					validParityBlocks.Add(blockIdx)
-					okParityCount++
 					l.Debug(ctx, "Block ok",
 						klog.AString("kind", "parity"),
 						klog.AInt("idx", blockIdx),
