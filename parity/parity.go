@@ -30,6 +30,8 @@ var (
 	ErrMalformedPacket errPacket
 	// ErrPacketNoMatch is returned when the packet does not match
 	ErrPacketNoMatch errPacketNoMatch
+	// ErrFailRepair is returned when not enough data exists to repair
+	ErrFailRepair errFailRepair
 )
 
 type (
@@ -39,6 +41,7 @@ type (
 	errPacketNotFound struct{}
 	errPacket         struct{}
 	errPacketNoMatch  struct{}
+	errFailRepair     struct{}
 )
 
 func (e errShortHeader) Error() string {
@@ -63,6 +66,10 @@ func (e errPacket) Error() string {
 
 func (e errPacketNoMatch) Error() string {
 	return "Packet does not match"
+}
+
+func (e errFailRepair) Error() string {
+	return "Failed to repair file"
 }
 
 type (
@@ -933,7 +940,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteS
 
 	packetSizes := calcPacketSizes(uint64(len(indexBody)), *layout)
 
-	var failedRepair []int
+	failedRepair := false
 
 	if layout.BlockSize > 0 {
 		var enc *reedsolomon.Matrix
@@ -1069,7 +1076,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteS
 
 			if hasCorruptedData {
 				if enc == nil {
-					failedRepair = append(failedRepair, stripeIdx)
+					failedRepair = true
 
 					l.Error(ctx, "Unable to repair data blocks",
 						klog.AInt("stripe", stripeIdx),
@@ -1078,7 +1085,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteS
 					)
 				} else {
 					if err := enc.ReconstructData(dataBlocks, parityBlocks); err != nil {
-						failedRepair = append(failedRepair, stripeIdx)
+						failedRepair = true
 
 						l.Err(ctx, kerrors.WithMsg(err, "Unable to repair data blocks"),
 							klog.AInt("stripe", stripeIdx),
@@ -1111,6 +1118,10 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity io.ReadWriteS
 				}
 			}
 		}
+	}
+
+	if failedRepair {
+		return kerrors.WithKind(nil, ErrFailRepair, "Failed to repair file")
 	}
 
 	// TODO repair parity file
