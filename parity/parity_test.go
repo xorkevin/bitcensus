@@ -231,10 +231,10 @@ func TestWriteParityFile(t *testing.T) {
 		expectedHash = blake2b.Sum512(buf[:])
 	}
 
-	fileHash, err := func() (_ [HeaderHashSize]byte, retErr error) {
+	fileHash, indexPacketHeaderHash, err := func() (_, _ [HeaderHashSize]byte, retErr error) {
 		inp, err := os.Open(inpFileName)
 		if err != nil {
-			return emptyHeaderHash, err
+			return emptyHeaderHash, emptyHeaderHash, err
 		}
 		defer func() {
 			if err := inp.Close(); err != nil {
@@ -243,7 +243,7 @@ func TestWriteParityFile(t *testing.T) {
 		}()
 		out, err := os.Create(parityFileName)
 		if err != nil {
-			return emptyHeaderHash, err
+			return emptyHeaderHash, emptyHeaderHash, err
 		}
 		defer func() {
 			if err := out.Close(); err != nil {
@@ -286,7 +286,7 @@ func TestWriteParityFile(t *testing.T) {
 
 	parityFileReader := bytes.NewReader(parityFile)
 	reader := newStreamReader(parityFileReader, make([]byte, 256))
-	indexPacketBody, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
+	indexPacketBody, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash})
 	assert.NoError(err)
 
 	var indexPacket parityv0.IndexPacket
