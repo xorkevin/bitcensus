@@ -90,10 +90,12 @@ const (
 )
 
 type (
+	Hash [HeaderHashSize]byte
+
 	PacketHeader struct {
 		Version    uint32
 		headerSum  uint32
-		PacketHash [HeaderHashSize]byte
+		PacketHash Hash
 		Length     uint64
 		Kind       PacketKind
 	}
@@ -177,10 +179,10 @@ const (
 
 var (
 	hashBlockZeroBuf = [hashBlockSize]byte{}
-	emptyHeaderHash  = [HeaderHashSize]byte{}
+	emptyHeaderHash  = Hash{}
 )
 
-func calcPacketHash(header PacketHeader, data []byte) ([HeaderHashSize]byte, error) {
+func calcPacketHash(header PacketHeader, data []byte) (Hash, error) {
 	h, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create packet hash")
@@ -213,12 +215,12 @@ func calcPacketHash(header PacketHeader, data []byte) ([HeaderHashSize]byte, err
 	} else if n != 16 {
 		return emptyHeaderHash, kerrors.WithMsg(io.ErrShortWrite, "Short write")
 	}
-	var packetHash [HeaderHashSize]byte
+	var packetHash Hash
 	copy(packetHash[:], h.Sum(nil))
 	return packetHash, nil
 }
 
-func writePacket(w io.Writer, kind PacketKind, data []byte) ([HeaderHashSize]byte, error) {
+func writePacket(w io.Writer, kind PacketKind, data []byte) (Hash, error) {
 	header := PacketHeader{
 		Version: PacketVersion,
 		Length:  uint64(len(data)),
@@ -254,8 +256,8 @@ type (
 		buf         byteBuffer
 		pos         int64
 		maxPos      int64
-		indexCache  map[[HeaderHashSize]byte][]cacheCandidate
-		parityCache map[[HeaderHashSize]byte][]cacheCandidate
+		indexCache  map[Hash][]cacheCandidate
+		parityCache map[Hash][]cacheCandidate
 	}
 
 	cacheCandidate struct {
@@ -270,8 +272,8 @@ func newStreamReader(r io.ReadSeeker, buf []byte) *streamReader {
 		buf:         byteBuffer{buf: buf, read: 0, write: 0},
 		pos:         0,
 		maxPos:      0,
-		indexCache:  map[[HeaderHashSize]byte][]cacheCandidate{},
-		parityCache: map[[HeaderHashSize]byte][]cacheCandidate{},
+		indexCache:  map[Hash][]cacheCandidate{},
+		parityCache: map[Hash][]cacheCandidate{},
 	}
 }
 
@@ -402,7 +404,7 @@ func (r *streamReader) seek(pos int64) error {
 type (
 	PacketMatch struct {
 		Kind   PacketKind
-		Hash   [HeaderHashSize]byte
+		Hash   Hash
 		Length uint64
 	}
 )
@@ -695,7 +697,7 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	}
 }
 
-func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout blockLayout) ([HeaderHashSize]byte, error) {
+func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout blockLayout) (Hash, error) {
 	fileHasher, err := blake2b.New512(nil)
 	if err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed to create file hasher")
@@ -718,7 +720,7 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout bl
 			copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
 		}
 	}
-	var fileHash [HeaderHashSize]byte
+	var fileHash Hash
 	copy(fileHash[:], fileHasher.Sum(nil))
 	indexPacket.InputFile.Hash = fileHash[:]
 	return fileHash, nil
@@ -776,7 +778,7 @@ type (
 	}
 )
 
-func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig) ([HeaderHashSize]byte, [HeaderHashSize]byte, error) {
+func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig) (Hash, Hash, error) {
 	fileSize, err := data.Seek(0, io.SeekEnd)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking to end of input file")
@@ -834,8 +836,14 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 }
 
 func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *parityv0.IndexPacket, layout blockLayout, packetSizes parityFilePacketSizes, validParityStripes, validParityBlocks *bitSet) error {
-	if err := w.Truncate(int64(packetSizes.file)); err != nil {
-		return kerrors.WithMsg(err, "Failed resizing parity file")
+	parityFileSize, err := w.Seek(0, io.SeekEnd)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed seeking to end of parity file")
+	}
+	if parityFileSize != int64(packetSizes.file) {
+		if err := w.Truncate(int64(packetSizes.file)); err != nil {
+			return kerrors.WithMsg(err, "Failed resizing parity file")
+		}
 	}
 
 	if layout.BlockSize > 0 {
@@ -912,7 +920,7 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 	return nil
 }
 
-func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayout, packetSizes parityFilePacketSizes, validIndexPos int64) ([HeaderHashSize]byte, error) {
+func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayout, packetSizes parityFilePacketSizes, validIndexPos int64) (Hash, error) {
 	if len(indexBytes) > int(packetSizes.indexBody) {
 		return emptyHeaderHash, kerrors.WithMsg(nil, "Inconsistent marshalled index packet size")
 	}
@@ -938,7 +946,7 @@ func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayo
 	return indexPacketHeaderHash, nil
 }
 
-func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash, indexPacketHeaderHash [HeaderHashSize]byte, fileSize uint64) error {
+func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash, indexPacketHeaderHash Hash, fileSize uint64) error {
 	l := klog.NewLevelLogger(log)
 
 	reader := newStreamReader(parity, nil)
@@ -975,9 +983,6 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 		if err := data.Truncate(int64(fileSize)); err != nil {
 			return kerrors.WithMsg(err, "Failed resizing data file")
 		}
-	}
-	if _, err := data.Seek(0, io.SeekStart); err != nil {
-		return kerrors.WithMsg(err, "Failed seeking to beginning of data file")
 	}
 
 	shardCfg := ShardConfig{
@@ -1083,7 +1088,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 
 			okParityCount := 0
 			for shardIdx, i := range parityBlocks {
-				var h [HeaderHashSize]byte
+				var h Hash
 				blockIdx := layout.calcBlockIdx(shardIdx, stripeIdx)
 				if copy(h[:], indexPacket.GetBlockSet().GetParity()[blockIdx].GetHash()) != HeaderHashSize {
 					parityBlocks[shardIdx] = parityBlocks[shardIdx][:0]

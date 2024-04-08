@@ -13,7 +13,7 @@ import (
 type (
 	// Repo is a content tree repository
 	Repo interface {
-		New(name string, size int64, modtime int64, hash string) *Model
+		New(name string, size int64, modtime int64, hash, parityHash, headerHash string) *Model
 		Exists(ctx context.Context, name string) (bool, error)
 		List(ctx context.Context, limit int, after string) ([]Model, error)
 		Get(ctx context.Context, name string) (*Model, error)
@@ -36,15 +36,19 @@ type (
 		Size           int64  `model:"size,BIGINT NOT NULL"`
 		ModTime        int64  `model:"mod_time,BIGINT NOT NULL"`
 		Hash           string `model:"hash,VARCHAR(2047) NOT NULL"`
+		ParityHash     string `model:"parity_hash,VARCHAR(2047) NOT NULL"`
+		HeaderHash     string `model:"header_hash,VARCHAR(2047) NOT NULL"`
 		LastVerifiedAt int64  `model:"last_verified_at,BIGINT NOT NULL"`
 	}
 
 	//forge:model:query file
 	fileProps struct {
-		Size           int64  `model:"size,BIGINT NOT NULL"`
-		ModTime        int64  `model:"mod_time,BIGINT NOT NULL"`
-		Hash           string `model:"hash,VARCHAR(2047) NOT NULL"`
-		LastVerifiedAt int64  `model:"last_verified_at,BIGINT NOT NULL"`
+		Size           int64  `model:"size"`
+		ModTime        int64  `model:"mod_time"`
+		Hash           string `model:"hash"`
+		ParityHash     string `model:"parity_hash"`
+		HeaderHash     string `model:"header_hash"`
+		LastVerifiedAt int64  `model:"last_verified_at"`
 	}
 )
 
@@ -57,12 +61,14 @@ func New(database sqldb.Executor, fileTable string) Repo {
 	}
 }
 
-func (r *repo) New(name string, size int64, modtime int64, hash string) *Model {
+func (r *repo) New(name string, size int64, modtime int64, hash, parityHash, headerHash string) *Model {
 	return &Model{
 		Name:           name,
 		Size:           size,
 		ModTime:        modtime,
 		Hash:           hash,
+		ParityHash:     parityHash,
+		HeaderHash:     headerHash,
 		LastVerifiedAt: time.Now().Round(0).UnixMilli(),
 	}
 }

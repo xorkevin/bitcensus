@@ -1,7 +1,6 @@
 package census
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -21,6 +20,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 	"xorkevin.dev/bitcensus/census/censusdbmodel"
 	"xorkevin.dev/bitcensus/dbsql"
+	"xorkevin.dev/bitcensus/parity"
 	"xorkevin.dev/bitcensus/util/bytefmt"
 	"xorkevin.dev/kerrors"
 	"xorkevin.dev/kfs"
@@ -63,8 +63,16 @@ type (
 	}
 
 	RepoConfig struct {
-		Path string          `mapstructure:"path"`
-		Dirs []RepoDirConfig `mapstructure:"dirs"`
+		Path   string          `mapstructure:"path"`
+		Dirs   []RepoDirConfig `mapstructure:"dirs"`
+		Parity ParityConfig    `mapstructure:"parity"`
+	}
+
+	ParityConfig struct {
+		Dir          string `mapstructure:"dir"`
+		BlockSize    uint64 `mapstructure:"blocksize"`
+		Shards       uint64 `mapstructure:"shards"`
+		ParityShards uint64 `mapstructure:"parityshards"`
 	}
 
 	SyncConfig map[string]RepoConfig
@@ -78,6 +86,13 @@ type (
 
 	VerifyFlags struct {
 		Before time.Time
+	}
+
+	parityOpts struct {
+		Dir          fs.FS
+		BlockSize    uint64
+		Shards       uint64
+		ParityShards uint64
 	}
 )
 
@@ -178,6 +193,15 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 	}
 
 	rootDir := kfs.DirFS(cfg.Path)
+	var par *parityOpts
+	if cfg.Parity.Dir != "" {
+		par = &parityOpts{
+			Dir:          kfs.DirFS(cfg.Parity.Dir),
+			BlockSize:    cfg.Parity.BlockSize,
+			Shards:       cfg.Parity.Shards,
+			ParityShards: cfg.Parity.ParityShards,
+		}
+	}
 
 	for _, i := range cfg.Dirs {
 		p := path.Clean(i.Path)
@@ -186,7 +210,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 				klog.AString("repopath", cfg.Path),
 				klog.AString("repofilepath", p),
 			)
-			if err := c.syncRepoFileFS(ctx, files, rootDir, p, flags); err != nil {
+			if err := c.syncRepoFileFS(ctx, files, rootDir, par, p, flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 			}
 		} else {
@@ -202,7 +226,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 			if err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
-			if err := c.syncRepoDir(ctx, files, rootDir, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
+			if err := c.syncRepoDir(ctx, files, rootDir, par, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync dir %s", p))
 			}
 		}
@@ -242,7 +266,7 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 	return nil
 }
 
-func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, match *regexp.Regexp, p string, entry fs.DirEntry, flags SyncFlags) error {
+func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, par *parityOpts, match *regexp.Regexp, p string, entry fs.DirEntry, flags SyncFlags) error {
 	if !entry.IsDir() {
 		if !match.MatchString(p) {
 			c.log.Debug(ctx, "Skipping unmatched file",
@@ -251,7 +275,7 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 			return nil
 		}
 
-		if err := c.syncRepoFileFS(ctx, files, dir, p, flags); err != nil {
+		if err := c.syncRepoFileFS(ctx, files, dir, par, p, flags); err != nil {
 			return kerrors.WithMsg(err, fmt.Sprintf("Failed to sync file %s", p))
 		}
 		return nil
@@ -264,14 +288,14 @@ func (c *Census) syncRepoDir(ctx context.Context, files censusdbmodel.Repo, dir 
 		klog.AString("path", p),
 	)
 	for _, i := range entries {
-		if err := c.syncRepoDir(ctx, files, dir, match, path.Join(p, i.Name()), i, flags); err != nil {
+		if err := c.syncRepoDir(ctx, files, dir, par, match, path.Join(p, i.Name()), i, flags); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, p string, flags SyncFlags) error {
+func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, dir fs.FS, par *parityOpts, p string, flags SyncFlags) error {
 	info, err := fs.Stat(dir, p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -288,8 +312,24 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		return err
 	}
 
+	missingParityHash := false
+	missingParityFile := false
+	sizeDiffers := false
+	if existingEntry != nil {
+		if par != nil {
+			missingParityHash = existingEntry.ParityHash == "" || existingEntry.HeaderHash == ""
+			if _, err := fs.Stat(par.Dir, p+parExt); err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					return kerrors.WithMsg(err, "Failed to stat file")
+				}
+				missingParityFile = true
+			}
+		}
+		sizeDiffers = info.Size() != existingEntry.Size
+	}
+
 	if !flags.Checksum {
-		if existingEntry != nil && info.Size() == existingEntry.Size && info.ModTime().Equal(time.Unix(0, existingEntry.ModTime)) {
+		if !missingParityHash && !missingParityFile && !sizeDiffers && existingEntry != nil && info.ModTime().Equal(time.Unix(0, existingEntry.ModTime)) {
 			c.log.Debug(ctx, "Skipping unchanged file on matching size and modtime",
 				klog.AString("path", p),
 			)
@@ -301,51 +341,193 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		klog.AString("path", p),
 		klog.AString("size", bytefmt.ToString(float64(info.Size()))),
 	)
-	if !flags.DryRun {
+	if flags.DryRun {
+		return nil
+	}
+
+	if existingEntry == nil {
+		// handle addition of new entry
+		var h, ph, hh string
+		var duration time.Duration
+		if par != nil {
+			var err error
+			start := time.Now()
+			h, ph, hh, err = c.writeParityFile(dir, *par, p)
+			duration = time.Since(start)
+			if err != nil {
+				return kerrors.WithMsg(err, "Failed hashing and writing parity file")
+			}
+		} else {
+			var err error
+			start := time.Now()
+			h, err = c.hashFile(dir, p)
+			duration = time.Since(start)
+			if err != nil {
+				return kerrors.WithMsg(err, "Failed to hash file")
+			}
+		}
+
+		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, hh)
+		if err := files.Insert(ctx, m); err != nil {
+			return kerrors.WithMsg(err, "Failed adding file entry")
+		}
+		c.log.Info(ctx, "Added file",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+		)
+		return nil
+	}
+
+	if sizeDiffers && !flags.Update {
+		// early return for differing size
+		c.log.Warn(ctx, "Size mismatch",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+		)
+		return nil
+	}
+
+	if par == nil {
+		// handle no parity config
 		start := time.Now()
 		h, err := c.hashFile(dir, p)
+		duration := time.Since(start)
 		if err != nil {
 			return kerrors.WithMsg(err, "Failed to hash file")
 		}
-		duration := time.Since(start)
-
-		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h)
-		if existingEntry == nil {
-			if err := files.Insert(ctx, m); err != nil {
-				return kerrors.WithMsg(err, "Failed adding file entry")
-			}
-			c.log.Info(ctx, "Added file",
+		mismatch := h != existingEntry.Hash
+		if mismatch && !flags.Update {
+			c.log.Warn(ctx, "Checksum mismatch",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
+			return nil
+		}
+		m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, "", "")
+		if err := files.Update(ctx, m); err != nil {
+			return kerrors.WithMsg(err, "Failed updating file entry")
+		}
+		if mismatch {
+			c.log.Info(ctx, "Updated changed file",
 				klog.AString("path", p),
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
 				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
 			)
 		} else {
-			mismatch := h != existingEntry.Hash
-			if mismatch && !flags.Update {
-				c.log.Warn(ctx, "Checksum mismatch",
+			c.log.Info(ctx, "Verified file",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
+		}
+		return nil
+	}
+
+	if !missingParityHash && !missingParityFile && !sizeDiffers {
+		// handle existing parity file
+		start := time.Now()
+		h, err := c.hashFile(dir, p)
+		duration := time.Since(start)
+		if err != nil {
+			return kerrors.WithMsg(err, "Failed to hash file")
+		}
+		if h == existingEntry.Hash {
+			// if no mismatch, also check parity file
+			start := time.Now()
+			ph, err := c.hashFile(par.Dir, p+parExt)
+			duration := time.Since(start) + duration
+			if err != nil {
+				return kerrors.WithMsg(err, "Failed to hash parity file")
+			}
+			if ph == existingEntry.ParityHash {
+				// handle parity file match
+				m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, existingEntry.HeaderHash)
+				if err := files.Update(ctx, m); err != nil {
+					return kerrors.WithMsg(err, "Failed updating file entry")
+				}
+				c.log.Info(ctx, "Verified file",
 					klog.AString("path", p),
 					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
 					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
 				)
 				return nil
 			}
+
+			// handle parity file mismatch
+			start = time.Now()
+			h, ph, hh, err := c.writeParityFile(dir, *par, p)
+			duration = time.Since(start)
+			if err != nil {
+				return kerrors.WithMsg(err, "Failed hashing and writing parity file")
+			}
+			if h != existingEntry.Hash {
+				return kerrors.WithMsg(nil, "File changed during reading")
+			}
+			m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, hh)
 			if err := files.Update(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed updating file entry")
 			}
-			if mismatch {
-				c.log.Info(ctx, "Updated changed file",
-					klog.AString("path", p),
-					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
-				)
-			} else {
-				c.log.Info(ctx, "Verified file",
-					klog.AString("path", p),
-					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
-				)
-			}
+			c.log.Info(ctx, "Verified file and fixed parity",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
+			return nil
 		}
+
+		// handle file mismatch
+		if !flags.Update {
+			c.log.Warn(ctx, "Checksum mismatch",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
+			return nil
+		}
+	}
+
+	// this branch is reached by having an existing file, a parity config and one
+	// of the following
+	//
+	// - missing parity hash data
+	// - missing a parity file
+	// - having a file mismatch in update mode
+	//
+	// in all cases, it is safe to regenerate the parity file
+
+	start := time.Now()
+	h, ph, hh, err := c.writeParityFile(dir, *par, p)
+	duration := time.Since(start)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed hashing and writing parity file")
+	}
+	mismatch := h != existingEntry.Hash
+	if mismatch && !flags.Update {
+		c.log.Warn(ctx, "Checksum mismatch",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+		)
+		return nil
+	}
+	m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, hh)
+	if err := files.Update(ctx, m); err != nil {
+		return kerrors.WithMsg(err, "Failed updating file entry")
+	}
+	if mismatch {
+		c.log.Info(ctx, "Updated changed file and wrote parity",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+		)
+	} else {
+		c.log.Info(ctx, "Verified file and wrote parity",
+			klog.AString("path", p),
+			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+		)
 	}
 
 	return nil
@@ -353,37 +535,6 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 
 func humanHashRate(size int64, duration time.Duration) string {
 	return bytefmt.ToString(float64(size)/duration.Seconds()) + "/s"
-}
-
-func (c *Census) hashFile(dir fs.FS, name string) (_ string, retErr error) {
-	h, err := blake2b.New512(nil)
-	if err != nil {
-		return "", kerrors.WithMsg(err, "Failed creating hash")
-	}
-	if err := c.readFile(h, dir, name); err != nil {
-		return "", err
-	}
-	return hashBytesToStr(h.Sum(nil)), nil
-}
-
-const (
-	hashPrefix = "$b2b$"
-)
-
-func hashBytesToStr(b []byte) string {
-	return hashPrefix + base64.RawURLEncoding.EncodeToString(b)
-}
-
-func parseHashStrToBytes(s string) ([]byte, error) {
-	s, ok := strings.CutPrefix(s, hashPrefix)
-	if !ok {
-		return nil, kerrors.WithMsg(nil, "Invalid hash prefix")
-	}
-	b, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return nil, kerrors.WithMsg(nil, "Malformed hash string")
-	}
-	return b, nil
 }
 
 func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
@@ -459,7 +610,7 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 			}
 			duration := time.Since(start)
 			if match {
-				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), i.Hash)); err != nil {
+				if err := files.Update(ctx, files.New(i.Name, info.Size(), info.ModTime().UnixNano(), i.Hash, i.ParityHash, i.HeaderHash)); err != nil {
 					return kerrors.WithMsg(err, "Failed updating file entry")
 				}
 				c.log.Info(ctx, "Verified file",
@@ -493,18 +644,43 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 }
 
 func (c *Census) verifyFile(dir fs.FS, name string, existingEntry censusdbmodel.Model) (_ bool, retErr error) {
-	b, err := parseHashStrToBytes(existingEntry.Hash)
+	h, err := c.hashFile(dir, name)
 	if err != nil {
 		return false, err
 	}
+	return h == existingEntry.Hash, nil
+}
+
+func (c *Census) hashFile(dir fs.FS, name string) (_ string, retErr error) {
 	h, err := blake2b.New512(nil)
 	if err != nil {
-		return false, kerrors.WithMsg(err, "Failed creating hash")
+		return "", kerrors.WithMsg(err, "Failed creating hash")
 	}
 	if err := c.readFile(h, dir, name); err != nil {
-		return false, err
+		return "", err
 	}
-	return bytes.Equal(b, h.Sum(nil)), nil
+	return hashBytesToStr(h.Sum(nil)), nil
+}
+
+const (
+	hashPrefix = "$b2b$"
+	parExt     = ".bcp"
+)
+
+func hashBytesToStr(b []byte) string {
+	return hashPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+func parseHashStrToBytes(s string) ([]byte, error) {
+	s, ok := strings.CutPrefix(s, hashPrefix)
+	if !ok {
+		return nil, kerrors.WithMsg(nil, "Malformed hash")
+	}
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, kerrors.WithMsg(err, "Malformed hash")
+	}
+	return b, nil
 }
 
 func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error) {
@@ -522,6 +698,55 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 		return kerrors.WithMsg(err, "Failed reading file")
 	}
 	return nil
+}
+
+func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string) (_, _, _ string, retErr error) {
+	dataFile, err := dir.Open(name)
+	if err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed opening file")
+	}
+	defer func() {
+		if err := dataFile.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close file"))
+		}
+	}()
+	data, ok := dataFile.(io.ReadSeeker)
+	if !ok {
+		return "", "", "", kerrors.WithMsg(nil, "Data file is not seekable")
+	}
+	parityFile, err := kfs.OpenFile(par.Dir, name+parExt, os.O_RDWR|os.O_CREATE, 0o666)
+	if err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed opening parity file")
+	}
+	defer func() {
+		if err := parityFile.Close(); err != nil {
+			retErr = errors.Join(retErr, kerrors.WithMsg(err, "Failed to close parity file"))
+		}
+	}()
+	parFile, ok := parityFile.(parity.ReadWriteSeekTruncater)
+	if !ok {
+		return "", "", "", kerrors.WithMsg(nil, "Parity file is not truncatable")
+	}
+	fileHash, headerHash, err := parity.WriteParityFile(parFile, data, parity.ShardConfig{
+		BlockSize:        par.BlockSize,
+		ShardCount:       par.Shards,
+		ParityShardCount: par.ParityShards,
+	})
+	if err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed computing parity file")
+	}
+	if _, err := parFile.Seek(0, io.SeekStart); err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed seeking parity file")
+	}
+	h, err := blake2b.New512(nil)
+	if err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed creating hash")
+	}
+	var buf [1024 * 1024]byte
+	if _, err := io.CopyBuffer(h, parFile, buf[:]); err != nil {
+		return "", "", "", kerrors.WithMsg(err, "Failed reading parity file")
+	}
+	return hashBytesToStr(fileHash[:]), hashBytesToStr(h.Sum(nil)), hashBytesToStr(headerHash[:]), nil
 }
 
 type (
@@ -609,15 +834,19 @@ func (c *Census) ImportRepo(ctx context.Context, r io.Reader, name string, overr
 			if !errors.Is(err, dbsql.ErrNotFound) {
 				return kerrors.WithMsg(err, "Failed getting file from db")
 			}
-			m = files.New(entry.Name, entry.Size, entry.ModTime, entry.Checksum)
+			// parity is a local concept
+			m = files.New(entry.Name, entry.Size, entry.ModTime, entry.Checksum, "", "")
 			m.LastVerifiedAt = 0
 			if err := files.Insert(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed adding file entry")
 			}
-		} else if override {
+		} else if entry.Checksum != m.Hash && override {
 			m.Size = entry.Size
 			m.ModTime = entry.ModTime
 			m.Hash = entry.Checksum
+			// discard parity if checksum differs
+			m.ParityHash = ""
+			m.HeaderHash = ""
 			m.LastVerifiedAt = 0
 			if err := files.Update(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed updating file entry")

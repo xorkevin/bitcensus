@@ -32,7 +32,7 @@ func TestPacketHeader(t *testing.T) {
 
 	header := PacketHeader{
 		Version:    0,
-		PacketHash: [HeaderHashSize]byte{0, 1, 2, 3, 4, 5, 6, 7},
+		PacketHash: Hash{0, 1, 2, 3, 4, 5, 6, 7},
 		Length:     8,
 		Kind:       1,
 	}
@@ -64,7 +64,7 @@ func TestWritePacket(t *testing.T) {
 		`{"second":"hello"}`,
 		`{"and":"third"}`,
 	}
-	packetHashes, err := func(packetPayloads []string) (_ [][HeaderHashSize]byte, retErr error) {
+	packetHashes, err := func(packetPayloads []string) (_ []Hash, retErr error) {
 		f, err := os.Create(packetfile)
 		if err != nil {
 			return nil, err
@@ -74,7 +74,7 @@ func TestWritePacket(t *testing.T) {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
-		packetHashes := make([][HeaderHashSize]byte, 0, len(packetPayloads))
+		packetHashes := make([]Hash, 0, len(packetPayloads))
 		for _, i := range packetPayloads {
 			h, err := writePacket(f, PacketKindIndex, []byte(i))
 			if err != nil {
@@ -105,7 +105,7 @@ func TestWritePacket(t *testing.T) {
 		binary.LittleEndian.PutUint64(trailer[4:], header.Length)
 		binary.BigEndian.PutUint32(trailer[12:], uint32(header.Kind))
 		padding := make([]byte, hashBlockSize-header.Length%hashBlockSize)
-		assert.Equal(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...)), header.PacketHash)
+		assert.Equal(Hash(blake2b.Sum512(append(append([]byte(i), padding...), trailer[:]...))), header.PacketHash)
 
 		reader.Reset(bytes.NewReader(buf))
 		body, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex})
@@ -222,7 +222,7 @@ func TestWriteParityFile(t *testing.T) {
 		shardCount       uint64 = 6
 		parityShardCount uint64 = 3
 	)
-	var expectedHash [HeaderHashSize]byte
+	var expectedHash Hash
 	var dataFile [fileSize]byte
 	{
 		h, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil)
@@ -233,7 +233,7 @@ func TestWriteParityFile(t *testing.T) {
 		expectedHash = blake2b.Sum512(dataFile[:])
 	}
 
-	fileHash, indexPacketHeaderHash, err := func() (_, _ [HeaderHashSize]byte, retErr error) {
+	fileHash, indexPacketHeaderHash, err := func() (_, _ Hash, retErr error) {
 		inp, err := os.Open(inpFileName)
 		if err != nil {
 			return emptyHeaderHash, emptyHeaderHash, err
@@ -307,7 +307,7 @@ func TestWriteParityFile(t *testing.T) {
 		reader.Reset(parityFileReader)
 
 		// ensure that all parity file packets are present
-		var h [HeaderHashSize]byte
+		var h Hash
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
@@ -318,7 +318,7 @@ func TestWriteParityFile(t *testing.T) {
 
 	for _, i := range indexPacket.GetBlockSet().GetParity() {
 		// use packet cache
-		var h [HeaderHashSize]byte
+		var h Hash
 		copy(h[:], i.GetHash())
 		var parityPacketBody []byte
 		var err error
