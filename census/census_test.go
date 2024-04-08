@@ -107,6 +107,7 @@ func TestCensus(t *testing.T) {
 		// a dry run will not modify the db
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
 			DryRun: true,
+			Update: true,
 		}))
 		var err *ChecksumError
 		assert.ErrorAs(census.VerifyRepos(context.Background(), VerifyFlags{}), &err)
@@ -115,8 +116,19 @@ func TestCensus(t *testing.T) {
 	}
 
 	{
-		// a re-sync should cause verify to pass again
+		// a sync will not update existing files
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
+		var err *ChecksumError
+		assert.ErrorAs(census.VerifyRepos(context.Background(), VerifyFlags{}), &err)
+		assert.Equal("hello", err.Repo)
+		assert.Equal([]string{"this/file/is/added.txt"}, err.Mismatch)
+	}
+
+	{
+		// an update sync should cause verify to pass again
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
+			Update: true,
+		}))
 		checkRepoExport(t)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
 	}
@@ -149,9 +161,10 @@ func TestCensus(t *testing.T) {
 	}
 
 	{
-		// force sync will avoid heuristic check
+		// checksum sync will avoid heuristic check
 		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
-			Force: true,
+			Update:   true,
+			Checksum: true,
 		}))
 		checkRepoExport(t)
 		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))

@@ -22,7 +22,8 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 	}
 	syncCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
 	syncCmd.PersistentFlags().BoolVar(&c.censusFlags.prune, "prune", false, "removes deleted files from the db")
-	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.force, "force", "f", false, "hashes files regardless of file size and modtime heuristic")
+	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.update, "update", "u", false, "updates files in db even if checksum differs")
+	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.checksum, "checksum", "c", false, "hashes files regardless of file size and modtime heuristic")
 	syncCmd.PersistentFlags().BoolVarP(&c.censusFlags.dryRun, "dry-run", "n", false, "do not modify the db and dry run the operation")
 	syncCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name (empty means all)")
 	cmd.AddCommand(syncCmd)
@@ -78,9 +79,10 @@ func (c *Cmd) getCensus() *census.Census {
 func (c *Cmd) execSync(cmd *cobra.Command, args []string) {
 	cen := c.getCensus()
 	flags := census.SyncFlags{
-		Prune:  c.censusFlags.prune,
-		Force:  c.censusFlags.force,
-		DryRun: c.censusFlags.dryRun,
+		Prune:    c.censusFlags.prune,
+		Update:   c.censusFlags.update,
+		Checksum: c.censusFlags.checksum,
+		DryRun:   c.censusFlags.dryRun,
 	}
 	if c.censusFlags.repo != "" {
 		if err := cen.SyncRepo(context.Background(), c.censusFlags.repo, flags); err != nil {

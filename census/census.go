@@ -70,9 +70,10 @@ type (
 	SyncConfig map[string]RepoConfig
 
 	SyncFlags struct {
-		Prune  bool
-		Force  bool
-		DryRun bool
+		Prune    bool
+		Update   bool
+		Checksum bool
+		DryRun   bool
 	}
 
 	VerifyFlags struct {
@@ -287,7 +288,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		return err
 	}
 
-	if !flags.Force {
+	if !flags.Checksum {
 		if existingEntry != nil && info.Size() == existingEntry.Size && info.ModTime().Equal(time.Unix(0, existingEntry.ModTime)) {
 			c.log.Debug(ctx, "Skipping unchanged file on matching size and modtime",
 				klog.AString("path", p),
@@ -296,7 +297,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		}
 	}
 
-	c.log.Info(ctx, "Adding file",
+	c.log.Info(ctx, "Syncing file",
 		klog.AString("path", p),
 		klog.AString("size", bytefmt.ToString(float64(info.Size()))),
 	)
@@ -313,17 +314,38 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 			if err := files.Insert(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed adding file entry")
 			}
+			c.log.Info(ctx, "Added file",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
 		} else {
+			mismatch := h != existingEntry.Hash
+			if mismatch && !flags.Update {
+				c.log.Warn(ctx, "Checksum mismatch",
+					klog.AString("path", p),
+					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				)
+				return nil
+			}
 			if err := files.Update(ctx, m); err != nil {
 				return kerrors.WithMsg(err, "Failed updating file entry")
 			}
+			if mismatch {
+				c.log.Info(ctx, "Updated changed file",
+					klog.AString("path", p),
+					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				)
+			} else {
+				c.log.Info(ctx, "Verified file",
+					klog.AString("path", p),
+					klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+					klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				)
+			}
 		}
-
-		c.log.Info(ctx, "Added file",
-			klog.AString("path", p),
-			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
-		)
 	}
 
 	return nil

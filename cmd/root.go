@@ -34,6 +34,8 @@ type (
 	censusFlags struct {
 		stateDBDir string
 		prune      bool
+		update     bool
+		checksum   bool
 		force      bool
 		dryRun     bool
 		before     string
