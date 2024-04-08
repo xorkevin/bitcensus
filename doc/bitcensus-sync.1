@@ -18,12 +18,12 @@ Syncs repo dbs
 
 .SH OPTIONS
 .PP
-\fB-n\fP, \fB--dry-run\fP[=false]
-	do not modify the db and dry run the operation
+\fB-c\fP, \fB--checksum\fP[=false]
+	hashes files regardless of file size and modtime heuristic
 
 .PP
-\fB-f\fP, \fB--force\fP[=false]
-	hashes files regardless of file size and modtime heuristic
+\fB-n\fP, \fB--dry-run\fP[=false]
+	do not modify the db and dry run the operation
 
 .PP
 \fB-h\fP, \fB--help\fP[=false]
@@ -40,6 +40,10 @@ Syncs repo dbs
 .PP
 \fB--state-db-dir\fP=""
 	state db directory (default is $XDG_DATA_HOME/bitcensus)
+
+.PP
+\fB-u\fP, \fB--update\fP[=false]
+	updates files in db even if checksum differs
 
 
 .SH OPTIONS INHERITED FROM PARENT COMMANDS

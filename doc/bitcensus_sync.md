@@ -13,12 +13,13 @@ bitcensus sync [flags]
 ### Options
 
 ```
+  -c, --checksum              hashes files regardless of file size and modtime heuristic
   -n, --dry-run               do not modify the db and dry run the operation
-  -f, --force                 hashes files regardless of file size and modtime heuristic
   -h, --help                  help for sync
       --prune                 removes deleted files from the db
   -r, --repo string           repo name (empty means all)
       --state-db-dir string   state db directory (default is $XDG_DATA_HOME/bitcensus)
+  -u, --update                updates files in db even if checksum differs
 ```
 
 ### Options inherited from parent commands
