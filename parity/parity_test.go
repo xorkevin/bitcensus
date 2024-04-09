@@ -357,7 +357,7 @@ func TestWriteParityFile(t *testing.T) {
 					retErr = errors.Join(retErr, err)
 				}
 			}()
-			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, fileSize); err != nil {
+			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, indexPacketHeaderHash, fileSize); err != nil {
 				return err
 			}
 			return nil
@@ -395,7 +395,7 @@ func TestWriteParityFile(t *testing.T) {
 					return err
 				}
 			}
-			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, fileSize); err != nil {
+			if err := RepairFile(context.Background(), klog.Discard{}, inp, parity, fileHash, indexPacketHeaderHash, fileSize); err != nil {
 				return err
 			}
 			return nil

@@ -955,14 +955,14 @@ func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayo
 	return indexPacketHeaderHash, nil
 }
 
-func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash Hash, fileSize uint64) error {
+func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash, indexPacketHeaderHash Hash, fileSize uint64) error {
 	l := klog.NewLevelLogger(log)
 
 	reader := newStreamReader(parity, nil)
 
 	var indexBytes []byte
 	var validIndexPos int64 = -1
-	if b, pos, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex}); err != nil {
+	if b, pos, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash}); err != nil {
 		return kerrors.WithMsg(err, "Failed to find index packet")
 	} else {
 		indexBytes = slices.Clone(b)
