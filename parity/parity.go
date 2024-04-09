@@ -32,6 +32,8 @@ var (
 	ErrPacketNoMatch errPacketNoMatch
 	// ErrFailRepair is returned when not enough data exists to repair
 	ErrFailRepair errFailRepair
+	// ErrFileNoMatch is returned when the file does not match
+	ErrFileNoMatch errFileNoMatch
 )
 
 type (
@@ -42,6 +44,7 @@ type (
 	errPacket         struct{}
 	errPacketNoMatch  struct{}
 	errFailRepair     struct{}
+	errFileNoMatch    struct{}
 )
 
 func (e errShortHeader) Error() string {
@@ -70,6 +73,10 @@ func (e errPacketNoMatch) Error() string {
 
 func (e errFailRepair) Error() string {
 	return "Failed to repair file"
+}
+
+func (e errFileNoMatch) Error() string {
+	return "File does not match"
 }
 
 type (
@@ -778,7 +785,7 @@ type (
 	}
 )
 
-func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig) (Hash, Hash, error) {
+func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig, matchFileHash Hash) (Hash, Hash, error) {
 	fileSize, err := data.Seek(0, io.SeekEnd)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking to end of input file")
@@ -814,6 +821,8 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 	fileHash, err := hashDataBlocks(&indexPacket, data, *layout)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
+	} else if matchFileHash != emptyHeaderHash && fileHash != matchFileHash {
+		return emptyHeaderHash, emptyHeaderHash, kerrors.WithKind(nil, ErrFileNoMatch, "Mismatched file hash")
 	}
 
 	packetSizes := calcPacketSizes(uint64(proto.Size(&indexPacket)), *layout)

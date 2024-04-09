@@ -352,7 +352,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if par != nil {
 			var err error
 			start := time.Now()
-			h, ph, hh, err = c.writeParityFile(dir, *par, p)
+			h, ph, hh, err = c.writeParityFile(dir, *par, p, "")
 			duration = time.Since(start)
 			if err != nil {
 				return kerrors.WithMsg(err, "Failed hashing and writing parity file")
@@ -457,13 +457,13 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 
 			// handle parity file mismatch
 			start = time.Now()
-			h, ph, hh, err := c.writeParityFile(dir, *par, p)
+			h, ph, hh, err := c.writeParityFile(dir, *par, p, existingEntry.Hash)
 			duration = time.Since(start)
 			if err != nil {
+				if errors.Is(err, parity.ErrFileNoMatch) {
+					return kerrors.WithMsg(nil, "File changed during reading")
+				}
 				return kerrors.WithMsg(err, "Failed hashing and writing parity file")
-			}
-			if h != existingEntry.Hash {
-				return kerrors.WithMsg(nil, "File changed during reading")
 			}
 			m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, hh)
 			if err := files.Update(ctx, m); err != nil {
@@ -498,25 +498,28 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 	// in all cases, it is safe to regenerate the parity file
 
 	start := time.Now()
-	h, ph, hh, err := c.writeParityFile(dir, *par, p)
+	matchFileHash := existingEntry.Hash
+	if flags.Update {
+		matchFileHash = ""
+	}
+	h, ph, hh, err := c.writeParityFile(dir, *par, p, matchFileHash)
 	duration := time.Since(start)
 	if err != nil {
+		if errors.Is(err, parity.ErrFileNoMatch) {
+			c.log.Warn(ctx, "Checksum mismatch",
+				klog.AString("path", p),
+				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
+				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			)
+			return nil
+		}
 		return kerrors.WithMsg(err, "Failed hashing and writing parity file")
-	}
-	mismatch := h != existingEntry.Hash
-	if mismatch && !flags.Update {
-		c.log.Warn(ctx, "Checksum mismatch",
-			klog.AString("path", p),
-			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
-		)
-		return nil
 	}
 	m := files.New(p, info.Size(), info.ModTime().UnixNano(), h, ph, hh)
 	if err := files.Update(ctx, m); err != nil {
 		return kerrors.WithMsg(err, "Failed updating file entry")
 	}
-	if mismatch {
+	if h != existingEntry.Hash {
 		c.log.Info(ctx, "Updated changed file and wrote parity",
 			klog.AString("path", p),
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
@@ -700,7 +703,15 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 	return nil
 }
 
-func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string) (_, _, _ string, retErr error) {
+func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string, matchFileHash string) (_, _, _ string, retErr error) {
+	var matchFileHashBytes parity.Hash
+	if b, err := parseHashStrToBytes(matchFileHash); err != nil {
+		return "", "", "", err
+	} else {
+		if copy(matchFileHashBytes[:], b) != parity.HeaderHashSize {
+			return "", "", "", kerrors.WithMsg(nil, "Malformed hash")
+		}
+	}
 	dataFile, err := dir.Open(name)
 	if err != nil {
 		return "", "", "", kerrors.WithMsg(err, "Failed opening file")
@@ -731,7 +742,7 @@ func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string) (_, _, 
 		BlockSize:        par.BlockSize,
 		ShardCount:       par.Shards,
 		ParityShardCount: par.ParityShards,
-	})
+	}, matchFileHashBytes)
 	if err != nil {
 		return "", "", "", kerrors.WithMsg(err, "Failed computing parity file")
 	}

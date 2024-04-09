@@ -256,7 +256,7 @@ func TestWriteParityFile(t *testing.T) {
 			BlockSize:        blockSize,
 			ShardCount:       shardCount,
 			ParityShardCount: parityShardCount,
-		})
+		}, emptyHeaderHash)
 	}()
 	assert.NoError(err)
 	assert.Equal(expectedHash, fileHash)
