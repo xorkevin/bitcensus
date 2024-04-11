@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,206 @@ func TestCensus(t *testing.T) {
 		dbImport := bytes.NewReader(dbExport.Bytes())
 		assert.NoError(census.ImportRepo(context.Background(), dbImport, "hello", false))
 		assert.ErrorIs(census.VerifyRepos(context.Background(), VerifyFlags{}), ErrNotFound)
+	}
+}
+
+func TestParity(t *testing.T) {
+	t.Parallel()
+
+	assert := require.New(t)
+
+	rootDir := filepath.ToSlash(t.TempDir())
+
+	dataDir := path.Join(rootDir, "bitcensus")
+	storageDir := path.Join(rootDir, "storage")
+	parityDir := path.Join(rootDir, "parity")
+
+	repoHelloFiles := map[string]string{
+		"file.txt": `this file is added`,
+	}
+
+	addFile := func(name string, content string) {
+		name = filepath.FromSlash(path.Join(storageDir, name))
+		dir := filepath.Dir(name)
+		assert.NoError(os.MkdirAll(dir, 0o777))
+		assert.NoError(os.WriteFile(name, []byte(content), 0o666))
+	}
+
+	syncFiles := func() {
+		for k, v := range repoHelloFiles {
+			addFile(path.Join("hello", k), v)
+		}
+	}
+
+	syncFiles()
+
+	census := New(klog.New(klog.OptHandler(klog.NewTextSlogHandler(os.Stderr))), dataDir, SyncConfig{
+		"hello": {
+			Path: path.Join(storageDir, "hello"),
+			Dirs: []RepoDirConfig{
+				{
+					Exact: false,
+					Path:  "",
+				},
+			},
+			Parity: ParityConfig{
+				Dir:          parityDir,
+				BlockSize:    1024,
+				Shards:       6,
+				ParityShards: 3,
+			},
+		},
+	})
+
+	checkRepoExport := func(t *testing.T) {
+		t.Helper()
+
+		var b bytes.Buffer
+		assert.NoError(census.ExportRepo(context.Background(), &b, "hello"))
+		count := 0
+		j := json.NewDecoder(&b)
+		for j.More() {
+			var entry FileEntry
+			assert.NoError(j.Decode(&entry))
+			count++
+			assert.Contains(repoHelloFiles, entry.Name)
+			content := repoHelloFiles[entry.Name]
+			assert.Equal(int64(len(content)), entry.Size)
+			assert.NotZero(entry.ModTime, entry)
+			assert.NotZero(entry.Checksum, entry)
+			assert.True(strings.HasPrefix(entry.Checksum, hashPrefix), entry)
+		}
+		assert.Equal(len(repoHelloFiles), count)
+	}
+
+	parityFileName := filepath.FromSlash(path.Join(parityDir, "file.txt.bcp"))
+
+	{
+		// sync and check export
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
+		checkRepoExport(t)
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+		// check parity file exists
+		info, err := os.Stat(parityFileName)
+		assert.NoError(err)
+		assert.NotZero(info.Size())
+
+		// additional sync will not change parity file mod time
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
+			Checksum: true,
+		}))
+		checkRepoExport(t)
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+
+		info2, err := os.Stat(parityFileName)
+		assert.NoError(err)
+		assert.Equal(info.ModTime(), info2.ModTime())
+	}
+
+	{
+		// check that parity file is repaired on sync
+		parityFile, err := os.ReadFile(parityFileName)
+		assert.NoError(err)
+
+		{
+			// simulate corrupt parity file
+			b := slices.Clone(parityFile)
+			b[0] = 0
+			b[1] = 0
+			b[2] = 0
+			b[3] = 0
+			assert.NoError(os.WriteFile(parityFileName, b, 0o666))
+		}
+
+		// parity file change is detected
+		var cerr *ChecksumError
+		assert.ErrorAs(census.VerifyRepos(context.Background(), VerifyFlags{}), &cerr)
+		assert.Equal("hello", cerr.Repo)
+		assert.Equal([]string{"file.txt"}, cerr.Mismatch)
+
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
+			Checksum: true,
+		}))
+		checkRepoExport(t)
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+
+		// check that parity file is repaired
+		parityFile2, err := os.ReadFile(parityFileName)
+		assert.NoError(err)
+		assert.Equal(parityFile, parityFile2)
+	}
+
+	{
+		// update both hash and parity on file change
+		parityFile, err := os.ReadFile(parityFileName)
+		assert.NoError(err)
+
+		repoHelloFiles["file.txt"] = `changed file 0`
+		syncFiles()
+
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{}))
+		var cerr *ChecksumError
+		assert.ErrorAs(census.VerifyRepos(context.Background(), VerifyFlags{}), &cerr)
+		assert.Equal("hello", cerr.Repo)
+		assert.Equal([]string{"file.txt"}, cerr.Mismatch)
+
+		{
+			parityFile2, err := os.ReadFile(parityFileName)
+			assert.NoError(err)
+			assert.Equal(parityFile, parityFile2)
+		}
+
+		assert.NoError(census.SyncRepos(context.Background(), SyncFlags{
+			Update: true,
+		}))
+		checkRepoExport(t)
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+
+		{
+			parityFile3, err := os.ReadFile(parityFileName)
+			assert.NoError(err)
+			assert.NotEqual(parityFile, parityFile3)
+		}
+	}
+
+	{
+		// repair both file and parity
+		parityFile, err := os.ReadFile(parityFileName)
+		assert.NoError(err)
+
+		repoHelloFiles["file.txt"] = `changed file 1`
+		syncFiles()
+
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{
+			Repair: true,
+		}))
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+
+		{
+			parityFile2, err := os.ReadFile(parityFileName)
+			assert.NoError(err)
+			assert.Equal(parityFile, parityFile2)
+		}
+
+		{
+			// simulate corrupt parity file
+			b := slices.Clone(parityFile)
+			b[0] = 0
+			b[1] = 0
+			b[2] = 0
+			b[3] = 0
+			assert.NoError(os.WriteFile(parityFileName, b, 0o666))
+		}
+
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{
+			Repair: true,
+		}))
+		assert.NoError(census.VerifyRepos(context.Background(), VerifyFlags{}))
+
+		{
+			parityFile3, err := os.ReadFile(parityFileName)
+			assert.NoError(err)
+			assert.Equal(parityFile, parityFile3)
+		}
 	}
 }

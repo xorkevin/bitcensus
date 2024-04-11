@@ -225,6 +225,9 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 			}
 			info, err := fs.Stat(rootDir, p)
 			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
 				return kerrors.WithMsg(err, fmt.Sprintf("Failed to stat dir %s", p))
 			}
 			if err := c.syncRepoDir(ctx, files, rootDir, par, r, p, fs.FileInfoToDirEntry(info), flags); err != nil {
@@ -767,11 +770,13 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 
 func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string, matchFileHash string) (_, _, _ string, retErr error) {
 	var matchFileHashBytes parity.Hash
-	if b, err := parseHashStrToBytes(matchFileHash); err != nil {
-		return "", "", "", err
-	} else {
-		if copy(matchFileHashBytes[:], b) != parity.HeaderHashSize {
-			return "", "", "", kerrors.WithMsg(nil, "Malformed hash")
+	if matchFileHash != "" {
+		if b, err := parseHashStrToBytes(matchFileHash); err != nil {
+			return "", "", "", err
+		} else {
+			if copy(matchFileHashBytes[:], b) != parity.HeaderHashSize {
+				return "", "", "", kerrors.WithMsg(nil, "Malformed hash")
+			}
 		}
 	}
 	dataFile, err := dir.Open(name)

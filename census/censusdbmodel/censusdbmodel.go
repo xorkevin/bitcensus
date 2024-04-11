@@ -124,6 +124,8 @@ func (r *repo) Update(ctx context.Context, m *Model) error {
 		Size:           m.Size,
 		ModTime:        m.ModTime,
 		Hash:           m.Hash,
+		ParityHash:     m.ParityHash,
+		HeaderHash:     m.HeaderHash,
 		LastVerifiedAt: m.LastVerifiedAt,
 	}, m.Name); err != nil {
 		return kerrors.WithMsg(err, "Failed to update file")
