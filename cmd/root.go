@@ -39,6 +39,7 @@ type (
 		force      bool
 		dryRun     bool
 		before     string
+		repair     bool
 		repo       string
 	}
 )

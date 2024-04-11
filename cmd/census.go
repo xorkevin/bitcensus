@@ -37,6 +37,7 @@ func (c *Cmd) addCensusCmds(cmd *cobra.Command) {
 	}
 	verifyCmd.PersistentFlags().StringVar(&c.censusFlags.stateDBDir, "state-db-dir", "", "state db directory (default is $XDG_DATA_HOME/bitcensus)")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.before, "before", "b", "168h", "age of files to verify (\"now\" will verify all)")
+	verifyCmd.PersistentFlags().BoolVar(&c.censusFlags.repair, "repair", false, "attempt to repair corrupted files")
 	verifyCmd.PersistentFlags().StringVarP(&c.censusFlags.repo, "repo", "r", "", "repo name (empty means all)")
 	cmd.AddCommand(verifyCmd)
 
@@ -113,6 +114,7 @@ func (c *Cmd) execVerify(cmd *cobra.Command, args []string) {
 	)
 	flags := census.VerifyFlags{
 		Before: before,
+		Repair: c.censusFlags.repair,
 	}
 	if c.censusFlags.repo != "" {
 		if err := cen.VerifyRepo(context.Background(), c.censusFlags.repo, flags); err != nil {
