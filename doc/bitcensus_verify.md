@@ -15,6 +15,7 @@ bitcensus verify [flags]
 ```
   -b, --before string         age of files to verify ("now" will verify all) (default "168h")
   -h, --help                  help for verify
+      --repair                attempt to repair corrupted files
   -r, --repo string           repo name (empty means all)
       --state-db-dir string   state db directory (default is $XDG_DATA_HOME/bitcensus)
 ```
