@@ -307,11 +307,11 @@ func (r *streamReader) GetPacket(match PacketMatch) ([]byte, int64, error) {
 				continue
 			}
 			if err := r.seek(i.pos); err != nil {
-				return nil, 0, kerrors.WithMsg(err, "Failed seeking to parity file")
+				return nil, 0, kerrors.WithMsg(err, "Failed seeking parity file")
 			}
 			_, body, err := r.readPacket(match)
 			if err != nil {
-				if errors.Is(err, ErrPacketNoMatch) || errors.Is(err, ErrMalformedPacket) {
+				if errors.Is(err, ErrPacketNoMatch) || errors.Is(err, ErrMalformedPacket) || errors.Is(err, ErrPacketNotFound) {
 					candidates[n].invalid = true
 					continue
 				}
@@ -321,6 +321,19 @@ func (r *streamReader) GetPacket(match PacketMatch) ([]byte, int64, error) {
 		}
 	}
 	return r.linearScanPacket(match)
+}
+
+func (r *streamReader) ValidatePacket(match PacketMatch, pos int64) (bool, error) {
+	if err := r.seek(pos); err != nil {
+		return false, kerrors.WithMsg(err, "Failed seeking parity file")
+	}
+	if _, _, err := r.readPacket(match); err != nil {
+		if errors.Is(err, ErrPacketNoMatch) || errors.Is(err, ErrMalformedPacket) || errors.Is(err, ErrPacketNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *streamReader) cachePacket(header PacketHeader, pos int64) {
@@ -339,16 +352,17 @@ func (r *streamReader) cachePacket(header PacketHeader, pos int64) {
 
 func (r *streamReader) linearScanPacket(match PacketMatch) ([]byte, int64, error) {
 	if err := r.seek(r.maxPos); err != nil {
-		return nil, 0, kerrors.WithMsg(err, "Failed seeking to parity file")
+		return nil, 0, kerrors.WithMsg(err, "Failed seeking parity file")
 	}
 	for {
+		pos := r.pos
 		var header PacketHeader
 		var body []byte
 		var err error
 		header, body, err = r.readPacket(match)
 		if err != nil {
 			if errors.Is(err, ErrPacketNoMatch) {
-				r.cachePacket(header, r.pos)
+				r.cachePacket(header, pos)
 			} else if errors.Is(err, ErrMalformedPacket) {
 			} else {
 				return nil, 0, err
@@ -375,7 +389,6 @@ func (r *streamReader) linearScanPacket(match PacketMatch) ([]byte, int64, error
 			}
 			continue
 		}
-		pos := r.pos
 		r.cachePacket(header, pos)
 		// may only advance length of packet in this scenario because packet has
 		// been verified
@@ -735,12 +748,13 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout bl
 
 type (
 	parityFilePacketSizes struct {
-		indexBody uint64
-		index     uint64
-		parity    uint64
-		shard     uint64
-		fileBody  uint64
-		file      uint64
+		parityShardCount uint64
+		indexBody        uint64
+		index            uint64
+		parity           uint64
+		shard            uint64
+		fileBody         uint64
+		file             uint64
 	}
 )
 
@@ -750,17 +764,25 @@ func calcPacketSizes(indexBody uint64, layout blockLayout) parityFilePacketSizes
 	shard := index + parity*layout.ShardStride
 	fileBody := shard * layout.ParityShardCount
 	return parityFilePacketSizes{
-		indexBody: indexBody,
-		index:     index,
-		parity:    parity,
-		shard:     shard,
-		fileBody:  fileBody,
-		file:      fileBody + index,
+		parityShardCount: layout.ParityShardCount,
+		indexBody:        indexBody,
+		index:            index,
+		parity:           parity,
+		shard:            shard,
+		fileBody:         fileBody,
+		file:             fileBody + index,
 	}
 }
 
 func (p parityFilePacketSizes) calcParityPacketOffset(shardIdx int, stripeIdx int) int64 {
 	return int64(p.shard)*int64(shardIdx) + int64(p.index) + int64(p.parity)*int64(stripeIdx)
+}
+
+func (p parityFilePacketSizes) calcIndexPacketOffset(shardIdx int) int64 {
+	if shardIdx == int(p.parityShardCount) {
+		return int64(p.fileBody)
+	}
+	return int64(p.shard) * int64(shardIdx)
 }
 
 func allocBlockBuffers(blockSize, count uint64) ([][]byte, []byte) {
@@ -836,7 +858,7 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed marshalling index packet")
 	}
 
-	indexPacketHeaderHash, err := writeIndexPackets(w, indexBytes, *layout, packetSizes, -1)
+	indexPacketHeaderHash, err := writeIndexPackets(w, indexBytes, *layout, packetSizes, nil)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
@@ -845,11 +867,9 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 }
 
 func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *parityv0.IndexPacket, layout blockLayout, packetSizes parityFilePacketSizes, validParityStripes, validParityBlocks *bitSet) error {
-	parityFileSize, err := w.Seek(0, io.SeekEnd)
-	if err != nil {
+	if parityFileSize, err := w.Seek(0, io.SeekEnd); err != nil {
 		return kerrors.WithMsg(err, "Failed seeking to end of parity file")
-	}
-	if parityFileSize != int64(packetSizes.file) {
+	} else if uint64(parityFileSize) != packetSizes.file {
 		if err := w.Truncate(int64(packetSizes.file)); err != nil {
 			return kerrors.WithMsg(err, "Failed resizing parity file")
 		}
@@ -929,23 +949,34 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 	return nil
 }
 
-func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayout, packetSizes parityFilePacketSizes, validIndexPos int64) (Hash, error) {
+func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayout, packetSizes parityFilePacketSizes, validIndexBlocks *bitSet) (Hash, error) {
 	if len(indexBytes) > int(packetSizes.indexBody) {
 		return emptyHeaderHash, kerrors.WithMsg(nil, "Inconsistent marshalled index packet size")
 	}
 	for shardIdx := range int(layout.ParityShardCount) {
-		pos := int64(packetSizes.shard) * int64(shardIdx)
-		if pos == validIndexPos {
+		if validIndexBlocks != nil && validIndexBlocks.Has(shardIdx) {
 			continue
 		}
-		if _, err := w.Seek(pos, io.SeekStart); err != nil {
+		if _, err := w.Seek(packetSizes.calcIndexPacketOffset(shardIdx), io.SeekStart); err != nil {
 			return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 		}
 		if _, err := writePacket(w, PacketKindIndex, indexBytes); err != nil {
 			return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing index packet")
 		}
 	}
-	if _, err := w.Seek(int64(packetSizes.fileBody), io.SeekStart); err != nil {
+	if validIndexBlocks != nil && validIndexBlocks.Has(int(layout.ParityShardCount)) {
+		header := PacketHeader{
+			Version: PacketVersion,
+			Length:  uint64(len(indexBytes)),
+			Kind:    PacketKindIndex,
+		}
+		indexPacketHeaderHash, err := calcPacketHash(header, indexBytes)
+		if err != nil {
+			return emptyHeaderHash, err
+		}
+		return indexPacketHeaderHash, nil
+	}
+	if _, err := w.Seek(packetSizes.calcIndexPacketOffset(int(layout.ParityShardCount)), io.SeekStart); err != nil {
 		return emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking parity file")
 	}
 	indexPacketHeaderHash, err := writePacket(w, PacketKindIndex, indexBytes)
@@ -958,15 +989,18 @@ func writeIndexPackets(w WriteSeekTruncater, indexBytes []byte, layout blockLayo
 func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeekTruncater, fileHash, indexPacketHeaderHash Hash, fileSize uint64) error {
 	l := klog.NewLevelLogger(log)
 
+	parityFileSize, err := parity.Seek(0, io.SeekEnd)
+	if err != nil {
+		return kerrors.WithMsg(err, "Failed seeking to end of parity file")
+	}
+
 	reader := newStreamReader(parity, nil)
 
 	var indexBytes []byte
-	var validIndexPos int64 = -1
-	if b, pos, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash}); err != nil {
+	if b, _, err := reader.GetPacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash}); err != nil {
 		return kerrors.WithMsg(err, "Failed to find index packet")
 	} else {
 		indexBytes = slices.Clone(b)
-		validIndexPos = pos
 	}
 	var indexPacket parityv0.IndexPacket
 	if err := proto.Unmarshal(indexBytes, &indexPacket); err != nil {
@@ -1124,7 +1158,16 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 				}
 				copy(i, parityBody)
 				okParityCount++
-				if parityPos == packetSizes.calcParityPacketOffset(shardIdx, stripeIdx) {
+				expectedParityBlockPos := packetSizes.calcParityPacketOffset(shardIdx, stripeIdx)
+				validBlockAtPos := parityPos == expectedParityBlockPos
+				if !validBlockAtPos && expectedParityBlockPos < parityFileSize {
+					ok, err := reader.ValidatePacket(PacketMatch{Kind: PacketKindParity, Hash: h, Length: layout.BlockSize}, expectedParityBlockPos)
+					if err != nil {
+						return kerrors.WithMsg(err, "Failed reading parity file")
+					}
+					validBlockAtPos = validBlockAtPos || ok
+				}
+				if validBlockAtPos {
 					validParityBlocks.Add(blockIdx)
 					l.Debug(ctx, "Block ok",
 						klog.AString("kind", "parity"),
@@ -1218,13 +1261,37 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 		return kerrors.WithKind(nil, ErrFailRepair, "Failed to repair file")
 	}
 
+	validIndexBlocks := newBitSet(int(layout.ShardCount) + 1)
+	for shardIdx := range int(layout.ParityShardCount) + 1 {
+		expectedPos := packetSizes.calcIndexPacketOffset(shardIdx)
+		if expectedPos >= parityFileSize {
+			continue
+		}
+		ok, err := reader.ValidatePacket(PacketMatch{Kind: PacketKindIndex, Hash: indexPacketHeaderHash}, expectedPos)
+		if err != nil {
+			return kerrors.WithMsg(err, "Failed reading parity file")
+		}
+		if ok {
+			validIndexBlocks.Add(shardIdx)
+			l.Debug(ctx, "Block ok",
+				klog.AString("kind", "index"),
+				klog.AInt("shard", shardIdx),
+			)
+		} else {
+			l.Warn(ctx, "Block misplaced",
+				klog.AString("kind", "index"),
+				klog.AInt("shard", shardIdx),
+			)
+		}
+	}
+
 	// repair any remaining parity blocks
 	if err := writeParityPackets(parity, data, &indexPacket, *layout, packetSizes, validParityStripes, validParityBlocks); err != nil {
 		return err
 	}
 
 	// repair any remaining index blocks
-	if _, err := writeIndexPackets(parity, indexBytes, *layout, packetSizes, validIndexPos); err != nil {
+	if _, err := writeIndexPackets(parity, indexBytes, *layout, packetSizes, validIndexBlocks); err != nil {
 		return err
 	}
 
