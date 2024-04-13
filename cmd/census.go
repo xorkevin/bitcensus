@@ -101,6 +101,7 @@ func (c *Cmd) execSync(cmd *cobra.Command, args []string) {
 func (c *Cmd) execVerify(cmd *cobra.Command, args []string) {
 	cen := c.getCensus()
 	var before time.Time
+	timeStr := "now"
 	if c.censusFlags.before != "" && c.censusFlags.before != "now" {
 		dur, err := time.ParseDuration(c.censusFlags.before)
 		if err != nil {
@@ -108,9 +109,10 @@ func (c *Cmd) execVerify(cmd *cobra.Command, args []string) {
 			return
 		}
 		before = time.Now().Round(0).Add(-dur)
+		timeStr = before.Format(time.RFC3339)
 	}
 	c.log.Info(context.Background(), "Verifying files",
-		klog.AString("before", before.Format(time.RFC3339)),
+		klog.AString("before", timeStr),
 	)
 	flags := census.VerifyFlags{
 		Before: before,

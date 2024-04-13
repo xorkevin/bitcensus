@@ -49,6 +49,10 @@ func (e *ChecksumError) Error() string {
 	return "Checksum error"
 }
 
+func (e *ChecksumError) ErrorMsg() string {
+	return "Checksum error"
+}
+
 type (
 	Census struct {
 		log     *klog.LevelLogger
