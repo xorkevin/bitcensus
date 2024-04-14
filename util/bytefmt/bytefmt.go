@@ -30,7 +30,7 @@ const (
 )
 
 // ToBytes transforms human byte representations to int64
-func ToBytes(s string) (int64, error) {
+func ToBytes(s string) (uint64, error) {
 	s = strings.ToUpper(s)
 
 	i := strings.IndexFunc(s, unicode.IsLetter)
@@ -40,7 +40,7 @@ func ToBytes(s string) (int64, error) {
 	}
 
 	bytesString, multiple := s[:i], s[i:]
-	bytes, err := strconv.ParseInt(bytesString, 10, 64)
+	bytes, err := strconv.ParseUint(bytesString, 10, 64)
 	if err != nil {
 		return 0, kerrors.WithKind(err, ErrFmt, "Failed to parse number")
 	}

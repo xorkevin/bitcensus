@@ -74,7 +74,7 @@ type (
 
 	ParityConfig struct {
 		Dir          string `mapstructure:"dir"`
-		BlockSize    uint64 `mapstructure:"blocksize"`
+		BlockSize    string `mapstructure:"blocksize"`
 		Shards       uint64 `mapstructure:"shards"`
 		ParityShards uint64 `mapstructure:"parityshards"`
 	}
@@ -137,6 +137,28 @@ func (c *Census) getFilesRepo(name string, mode string) (censusdbmodel.Repo, *db
 	return files, d, nil
 }
 
+func (c *Census) getParityOpts(cfg ParityConfig) (*parityOpts, error) {
+	blockSize, err := bytefmt.ToBytes(cfg.BlockSize)
+	if err != nil {
+		return nil, kerrors.WithMsg(err, "Invalid block size")
+	}
+	if blockSize == 0 {
+		return nil, kerrors.WithMsg(nil, "Invalid block size")
+	}
+	if cfg.Shards == 0 {
+		return nil, kerrors.WithMsg(nil, "Invalid shard count")
+	}
+	if cfg.Shards+cfg.ParityShards > 255 {
+		return nil, kerrors.WithMsg(nil, "Shard counts may not exceed 255")
+	}
+	return &parityOpts{
+		Dir:          kfs.DirFS(cfg.Dir),
+		BlockSize:    blockSize,
+		Shards:       cfg.Shards,
+		ParityShards: cfg.ParityShards,
+	}, nil
+}
+
 func (c *Census) SyncRepos(ctx context.Context, flags SyncFlags) error {
 	names := make([]string, 0, len(c.cfg))
 	for k := range c.cfg {
@@ -175,6 +197,15 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
+	var par *parityOpts
+	if cfg.Parity.Dir != "" {
+		var err error
+		par, err = c.getParityOpts(cfg.Parity)
+		if err != nil {
+			return err
+		}
+	}
+
 	files, d, err := c.getFilesRepo(name, "rwc")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
@@ -198,15 +229,6 @@ func (c *Census) SyncRepo(ctx context.Context, name string, flags SyncFlags) (re
 	}
 
 	rootDir := kfs.DirFS(cfg.Path)
-	var par *parityOpts
-	if cfg.Parity.Dir != "" {
-		par = &parityOpts{
-			Dir:          kfs.DirFS(cfg.Parity.Dir),
-			BlockSize:    cfg.Parity.BlockSize,
-			Shards:       cfg.Parity.Shards,
-			ParityShards: cfg.Parity.ParityShards,
-		}
-	}
 
 	for _, i := range cfg.Dirs {
 		p := path.Clean(i.Path)
@@ -570,6 +592,15 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 		return kerrors.WithMsg(nil, fmt.Sprintf("Invalid repo %s", name))
 	}
 
+	var par *parityOpts
+	if cfg.Parity.Dir != "" {
+		var err error
+		par, err = c.getParityOpts(cfg.Parity)
+		if err != nil {
+			return err
+		}
+	}
+
 	files, d, err := c.getFilesRepo(name, "rw")
 	if err != nil {
 		return kerrors.WithMsg(err, fmt.Sprintf("Failed getting repo %s", name))
@@ -586,15 +617,6 @@ func (c *Census) VerifyRepo(ctx context.Context, name string, flags VerifyFlags)
 	var mismatch []string
 
 	rootDir := kfs.DirFS(cfg.Path)
-	var par *parityOpts
-	if cfg.Parity.Dir != "" {
-		par = &parityOpts{
-			Dir:          kfs.DirFS(cfg.Parity.Dir),
-			BlockSize:    cfg.Parity.BlockSize,
-			Shards:       cfg.Parity.Shards,
-			ParityShards: cfg.Parity.ParityShards,
-		}
-	}
 
 	cursor := ""
 	for {

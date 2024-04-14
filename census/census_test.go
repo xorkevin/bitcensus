@@ -252,7 +252,7 @@ func TestParity(t *testing.T) {
 			},
 			Parity: ParityConfig{
 				Dir:          parityDir,
-				BlockSize:    1024,
+				BlockSize:    "1K",
 				Shards:       6,
 				ParityShards: 3,
 			},
