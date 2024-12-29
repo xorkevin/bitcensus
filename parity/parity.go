@@ -707,14 +707,14 @@ func initIndexBlocks(numBlocks, parityBlocks uint64) *parityv0.BlockSet {
 	for i := range blocks {
 		binary.BigEndian.PutUint64(counter[:], uint64(i))
 		blockHashes[i] = blake2b.Sum512(counter[:])
-		blocks[i] = &parityv0.Block{
+		blocks[i] = parityv0.Block_builder{
 			Hash: blockHashes[i][:],
-		}
+		}.Build()
 	}
-	return &parityv0.BlockSet{
+	return parityv0.BlockSet_builder{
 		Input:  blocks[:numBlocks],
 		Parity: blocks[numBlocks:],
-	}
+	}.Build()
 }
 
 func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout blockLayout) (Hash, error) {
@@ -724,7 +724,7 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout bl
 	}
 	if layout.BlockSize > 0 {
 		buf := make([]byte, layout.BlockSize)
-		for blockIdx := range indexPacket.BlockSet.Input {
+		for blockIdx := range indexPacket.GetBlockSet().GetInput() {
 			clear(buf)
 			b := buf
 			if layout.isLastDataBlock(blockIdx) {
@@ -737,12 +737,12 @@ func hashDataBlocks(indexPacket *parityv0.IndexPacket, data io.Reader, layout bl
 				return emptyHeaderHash, kerrors.WithMsg(err, "Failed writing to hasher")
 			}
 			h := blake2b.Sum512(b)
-			copy(indexPacket.BlockSet.Input[blockIdx].Hash, h[:])
+			copy(indexPacket.GetBlockSet().GetInput()[blockIdx].GetHash(), h[:])
 		}
 	}
 	var fileHash Hash
 	copy(fileHash[:], fileHasher.Sum(nil))
-	indexPacket.InputFile.Hash = fileHash[:]
+	indexPacket.GetInputFile().SetHash(fileHash[:])
 	return fileHash, nil
 }
 
@@ -821,39 +821,39 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
 
-	indexPacket := parityv0.IndexPacket{
-		InputFile: &parityv0.InputFile{
-			Size: layout.FileSize,
-		},
-		ShardConfig: &parityv0.ShardConfig{
-			BlockSize:   layout.BlockSize,
-			Count:       layout.ShardCount,
-			ParityCount: layout.ParityShardCount,
-		},
-	}
+	indexPacket := parityv0.IndexPacket_builder{
+		InputFile: parityv0.InputFile_builder{
+			Size: proto.Uint64(layout.FileSize),
+		}.Build(),
+		ShardConfig: parityv0.ShardConfig_builder{
+			BlockSize:   proto.Uint64(layout.BlockSize),
+			Count:       proto.Uint64(layout.ShardCount),
+			ParityCount: proto.Uint64(layout.ParityShardCount),
+		}.Build(),
+	}.Build()
 	if layout.ShardCount > 0 && layout.ParityShardCount > 0 {
-		indexPacket.ShardConfig.CodeMatrixConfig = &parityv0.CodeMatrixConfig{
-			Kind: string(CodeMatrixKindVandermonde),
-		}
+		indexPacket.GetShardConfig().SetCodeMatrixConfig(parityv0.CodeMatrixConfig_builder{
+			Kind: proto.String(string(CodeMatrixKindVandermonde)),
+		}.Build())
 	}
 	if layout.NumBlocks > 0 {
-		indexPacket.BlockSet = initIndexBlocks(layout.NumBlocks, layout.NumParityBlocks)
+		indexPacket.SetBlockSet(initIndexBlocks(layout.NumBlocks, layout.NumParityBlocks))
 	}
 
-	fileHash, err := hashDataBlocks(&indexPacket, data, *layout)
+	fileHash, err := hashDataBlocks(indexPacket, data, *layout)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	} else if matchFileHash != emptyHeaderHash && fileHash != matchFileHash {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithKind(nil, ErrFileNoMatch, "Mismatched file hash")
 	}
 
-	packetSizes := calcPacketSizes(uint64(proto.Size(&indexPacket)), *layout)
+	packetSizes := calcPacketSizes(uint64(proto.Size(indexPacket)), *layout)
 
-	if err := writeParityPackets(w, data, &indexPacket, *layout, packetSizes, nil, nil); err != nil {
+	if err := writeParityPackets(w, data, indexPacket, *layout, packetSizes, nil, nil); err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
 
-	indexBytes, err := proto.Marshal(&indexPacket)
+	indexBytes, err := proto.Marshal(indexPacket)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed marshalling index packet")
 	}
@@ -941,7 +941,7 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 						return kerrors.WithMsg(nil, "Parity packet differs")
 					}
 				} else {
-					copy(indexPacket.BlockSet.Parity[blockIdx].Hash, h[:])
+					copy(indexPacket.GetBlockSet().GetParity()[blockIdx].GetHash(), h[:])
 				}
 			}
 		}

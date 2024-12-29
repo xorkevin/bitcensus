@@ -1,4 +1,5 @@
-syntax = "proto3";
+edition = "2023";
+
 package xorkevin.bitcensus.parity.v0;
 
 option go_package = "xorkevin.dev/bitcensus/pb/parityv0";
