@@ -860,13 +860,14 @@ func WriteParityFile(ctx context.Context, log klog.Logger, w WriteSeekTruncater,
 	packetSizes := calcPacketSizes(uint64(proto.Size(indexPacket)), *layout)
 
 	start = time.Now()
-	if err := writeParityPackets(w, data, indexPacket, *layout, packetSizes, nil, nil); err != nil {
+	if err := writeParityPackets(ctx, l, w, data, indexPacket, *layout, packetSizes, nil, nil); err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
 	duration = time.Since(start)
 	l.Info(ctx, "Wrote parity packets",
 		klog.AString("size", bytefmt.ToString(float64(fileSize))),
 		klog.ADuration("duration", duration),
+		klog.AString("encoderate", bytefmt.HumanHashRate(fileSize, duration)),
 	)
 
 	indexBytes, err := proto.Marshal(indexPacket)
@@ -888,7 +889,7 @@ func WriteParityFile(ctx context.Context, log klog.Logger, w WriteSeekTruncater,
 	return fileHash, indexPacketHeaderHash, nil
 }
 
-func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *parityv0.IndexPacket, layout blockLayout, packetSizes parityFilePacketSizes, validParityStripes, validParityBlocks *bitSet) error {
+func writeParityPackets(ctx context.Context, l *klog.LevelLogger, w WriteSeekTruncater, data io.ReadSeeker, indexPacket *parityv0.IndexPacket, layout blockLayout, packetSizes parityFilePacketSizes, validParityStripes, validParityBlocks *bitSet) error {
 	if parityFileSize, err := w.Seek(0, io.SeekEnd); err != nil {
 		return kerrors.WithMsg(err, "Failed seeking to end of parity file")
 	} else if uint64(parityFileSize) != packetSizes.file {
@@ -907,6 +908,12 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 			}
 		}
 
+		dataBlockStripeSize := int64(layout.ShardCount * layout.BlockSize)
+		parityBlockStripeSize := int64(layout.ParityShardCount * layout.BlockSize)
+		allBlockStripeSize := dataBlockStripeSize + parityBlockStripeSize
+		dataBlockStripeSizeStr := bytefmt.ToString(float64(layout.ShardCount * layout.BlockSize))
+		parityBlockStripeSizeStr := bytefmt.ToString(float64(layout.ParityShardCount * layout.BlockSize))
+
 		allBlocks, buf := allocBlockBuffers(layout.BlockSize, layout.ShardCount+layout.ParityShardCount)
 		dataBlocks := allBlocks[:layout.ShardCount]
 		parityBlocks := allBlocks[layout.ShardCount:]
@@ -918,6 +925,7 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 			// clear buffer before reading
 			clear(buf)
 
+			start := time.Now()
 			for shardIdx, i := range dataBlocks {
 				if layout.isLastShardEmptyBlock(shardIdx, stripeIdx) {
 					break
@@ -938,13 +946,29 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 					return kerrors.WithMsg(nil, "File changed during reading")
 				}
 			}
+			duration := time.Since(start)
+			l.Debug(ctx, "Read parity stripe",
+				klog.AString("size", dataBlockStripeSizeStr),
+				klog.ADuration("duration", duration),
+				klog.AString("readrate", bytefmt.HumanHashRate(dataBlockStripeSize, duration)),
+			)
 
 			if enc != nil {
+				start = time.Now()
 				if err := enc.Encode(dataBlocks, parityBlocks); err != nil {
 					return kerrors.WithMsg(err, "Failed encoding parity blocks")
 				}
+				duration = time.Since(start)
+				l.Debug(ctx, "Encode parity stripe",
+					klog.AUint64("blocksize", layout.BlockSize),
+					klog.AUint64("datashardcount", layout.ShardCount),
+					klog.AUint64("parityshardcount", layout.ParityShardCount),
+					klog.ADuration("duration", duration),
+					klog.AString("encoderate", bytefmt.HumanHashRate(allBlockStripeSize, duration)),
+				)
 			}
 
+			start = time.Now()
 			for shardIdx, i := range parityBlocks {
 				blockIdx := layout.calcBlockIdx(shardIdx, stripeIdx)
 				if validParityBlocks != nil && validParityBlocks.Has(blockIdx) {
@@ -966,6 +990,12 @@ func writeParityPackets(w WriteSeekTruncater, data io.ReadSeeker, indexPacket *p
 					copy(indexPacket.GetBlockSet().GetParity()[blockIdx].GetHash(), h[:])
 				}
 			}
+			duration = time.Since(start)
+			l.Debug(ctx, "Wrote parity stripe",
+				klog.AString("size", parityBlockStripeSizeStr),
+				klog.ADuration("duration", duration),
+				klog.AString("writerate", bytefmt.HumanHashRate(parityBlockStripeSize, duration)),
+			)
 		}
 	}
 	return nil
@@ -1308,7 +1338,7 @@ func RepairFile(ctx context.Context, log klog.Logger, data, parity ReadWriteSeek
 	}
 
 	// repair any remaining parity blocks
-	if err := writeParityPackets(parity, data, &indexPacket, *layout, packetSizes, validParityStripes, validParityBlocks); err != nil {
+	if err := writeParityPackets(ctx, l, parity, data, &indexPacket, *layout, packetSizes, validParityStripes, validParityBlocks); err != nil {
 		return err
 	}
 
