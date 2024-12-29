@@ -854,7 +854,8 @@ func WriteParityFile(ctx context.Context, log klog.Logger, w WriteSeekTruncater,
 	}
 	l.Info(ctx, "Hashed file",
 		klog.AString("size", bytefmt.ToString(float64(fileSize))),
-		klog.AString("hashrate", bytefmt.HumanHashRate(fileSize, duration)),
+		klog.ADuration("duration", duration),
+		klog.AString("hashrate", bytefmt.HumanRate(fileSize, duration)),
 	)
 
 	packetSizes := calcPacketSizes(uint64(proto.Size(indexPacket)), *layout)
@@ -867,7 +868,7 @@ func WriteParityFile(ctx context.Context, log klog.Logger, w WriteSeekTruncater,
 	l.Info(ctx, "Wrote parity packets",
 		klog.AString("size", bytefmt.ToString(float64(fileSize))),
 		klog.ADuration("duration", duration),
-		klog.AString("encoderate", bytefmt.HumanHashRate(fileSize, duration)),
+		klog.AString("encoderate", bytefmt.HumanRate(fileSize, duration)),
 	)
 
 	indexBytes, err := proto.Marshal(indexPacket)
@@ -950,7 +951,7 @@ func writeParityPackets(ctx context.Context, l *klog.LevelLogger, w WriteSeekTru
 			l.Debug(ctx, "Read parity stripe",
 				klog.AString("size", dataBlockStripeSizeStr),
 				klog.ADuration("duration", duration),
-				klog.AString("readrate", bytefmt.HumanHashRate(dataBlockStripeSize, duration)),
+				klog.AString("readrate", bytefmt.HumanRate(dataBlockStripeSize, duration)),
 			)
 
 			if enc != nil {
@@ -964,7 +965,7 @@ func writeParityPackets(ctx context.Context, l *klog.LevelLogger, w WriteSeekTru
 					klog.AUint64("datashardcount", layout.ShardCount),
 					klog.AUint64("parityshardcount", layout.ParityShardCount),
 					klog.ADuration("duration", duration),
-					klog.AString("encoderate", bytefmt.HumanHashRate(allBlockStripeSize, duration)),
+					klog.AString("encoderate", bytefmt.HumanRate(allBlockStripeSize, duration)),
 				)
 			}
 
@@ -994,7 +995,7 @@ func writeParityPackets(ctx context.Context, l *klog.LevelLogger, w WriteSeekTru
 			l.Debug(ctx, "Wrote parity stripe",
 				klog.AString("size", parityBlockStripeSizeStr),
 				klog.ADuration("duration", duration),
-				klog.AString("writerate", bytefmt.HumanHashRate(parityBlockStripeSize, duration)),
+				klog.AString("writerate", bytefmt.HumanRate(parityBlockStripeSize, duration)),
 			)
 		}
 	}

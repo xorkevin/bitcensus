@@ -89,6 +89,6 @@ func ToString(bytes float64) string {
 	return strconv.FormatFloat(bytes, 'f', 2, 64) + unitname
 }
 
-func HumanHashRate(size int64, duration time.Duration) string {
+func HumanRate(size int64, duration time.Duration) string {
 	return ToString(float64(size)/duration.Seconds()) + "/s"
 }

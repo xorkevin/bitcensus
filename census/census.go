@@ -397,7 +397,8 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 			}
 			c.log.Info(ctx, "Hashed file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 		}
 
@@ -431,7 +432,8 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if mismatch && !flags.Update {
 			c.log.Warn(ctx, "Checksum mismatch",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 			return nil
 		}
@@ -442,12 +444,14 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if mismatch {
 			c.log.Info(ctx, "Updated changed file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 		} else {
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 		}
 		return nil
@@ -464,7 +468,8 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if h == existingEntry.Hash {
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 
 			// if no mismatch, also check parity file
@@ -513,7 +518,8 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		// handle file mismatch
 		c.log.Warn(ctx, "Checksum mismatch",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+			klog.ADuration("duration", duration),
+			klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 		)
 		if !flags.Update {
 			return nil
@@ -540,7 +546,8 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if errors.Is(err, parity.ErrFileNoMatch) {
 			c.log.Warn(ctx, "Checksum mismatch",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 			return nil
 		}
@@ -679,14 +686,16 @@ func (c *Census) verifyRepoFileFS(ctx context.Context, files censusdbmodel.Repo,
 			}
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+				klog.ADuration("duration", duration),
+				klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 			)
 			return true, nil
 		}
 
 		c.log.Info(ctx, "Verified file",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+			klog.ADuration("duration", duration),
+			klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 		)
 
 		start := time.Now()
@@ -710,7 +719,8 @@ func (c *Census) verifyRepoFileFS(ctx context.Context, files censusdbmodel.Repo,
 	} else {
 		c.log.Warn(ctx, "Checksum mismatch",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
+			klog.ADuration("duration", duration),
+			klog.AString("hashrate", bytefmt.HumanRate(info.Size(), duration)),
 		)
 	}
 
