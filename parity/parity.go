@@ -8,11 +8,13 @@ import (
 	"hash/crc32"
 	"io"
 	"slices"
+	"time"
 
 	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
 	"xorkevin.dev/bitcensus/pb/parityv0"
 	"xorkevin.dev/bitcensus/reedsolomon"
+	"xorkevin.dev/bitcensus/util/bytefmt"
 	"xorkevin.dev/kerrors"
 	"xorkevin.dev/klog"
 )
@@ -807,7 +809,9 @@ type (
 	}
 )
 
-func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig, matchFileHash Hash) (Hash, Hash, error) {
+func WriteParityFile(ctx context.Context, log klog.Logger, w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardConfig, matchFileHash Hash) (Hash, Hash, error) {
+	l := klog.NewLevelLogger(log)
+
 	fileSize, err := data.Seek(0, io.SeekEnd)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed seeking to end of input file")
@@ -840,28 +844,46 @@ func WriteParityFile(w WriteSeekTruncater, data io.ReadSeeker, shardCfg ShardCon
 		indexPacket.SetBlockSet(initIndexBlocks(layout.NumBlocks, layout.NumParityBlocks))
 	}
 
+	start := time.Now()
 	fileHash, err := hashDataBlocks(indexPacket, data, *layout)
+	duration := time.Since(start)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	} else if matchFileHash != emptyHeaderHash && fileHash != matchFileHash {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithKind(nil, ErrFileNoMatch, "Mismatched file hash")
 	}
+	l.Info(ctx, "Hashed file",
+		klog.AString("size", bytefmt.ToString(float64(fileSize))),
+		klog.AString("hashrate", bytefmt.HumanHashRate(fileSize, duration)),
+	)
 
 	packetSizes := calcPacketSizes(uint64(proto.Size(indexPacket)), *layout)
 
+	start = time.Now()
 	if err := writeParityPackets(w, data, indexPacket, *layout, packetSizes, nil, nil); err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
+	duration = time.Since(start)
+	l.Info(ctx, "Wrote parity packets",
+		klog.AString("size", bytefmt.ToString(float64(fileSize))),
+		klog.ADuration("duration", duration),
+	)
 
 	indexBytes, err := proto.Marshal(indexPacket)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, kerrors.WithMsg(err, "Failed marshalling index packet")
 	}
 
+	start = time.Now()
 	indexPacketHeaderHash, err := writeIndexPackets(w, indexBytes, *layout, packetSizes, nil)
+	duration = time.Since(start)
 	if err != nil {
 		return emptyHeaderHash, emptyHeaderHash, err
 	}
+	l.Info(ctx, "Wrote index packets",
+		klog.AString("size", bytefmt.ToString(float64(fileSize))),
+		klog.ADuration("duration", duration),
+	)
 
 	return fileHash, indexPacketHeaderHash, nil
 }

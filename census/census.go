@@ -378,7 +378,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if par != nil {
 			var err error
 			start := time.Now()
-			h, ph, hh, err = c.writeParityFile(dir, *par, p, "")
+			h, ph, hh, err = c.writeParityFile(ctx, dir, *par, p, "")
 			duration := time.Since(start)
 			if err != nil {
 				return kerrors.WithMsg(err, "Failed hashing and writing parity file")
@@ -397,7 +397,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 			}
 			c.log.Info(ctx, "Hashed file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 		}
 
@@ -431,7 +431,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if mismatch && !flags.Update {
 			c.log.Warn(ctx, "Checksum mismatch",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 			return nil
 		}
@@ -442,12 +442,12 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if mismatch {
 			c.log.Info(ctx, "Updated changed file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 		} else {
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 		}
 		return nil
@@ -464,7 +464,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		if h == existingEntry.Hash {
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 
 			// if no mismatch, also check parity file
@@ -491,7 +491,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 
 			// handle parity file mismatch
 			start = time.Now()
-			h, ph, hh, err := c.writeParityFile(dir, *par, p, existingEntry.Hash)
+			h, ph, hh, err := c.writeParityFile(ctx, dir, *par, p, existingEntry.Hash)
 			duration = time.Since(start)
 			if err != nil {
 				if errors.Is(err, parity.ErrFileNoMatch) {
@@ -513,7 +513,7 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		// handle file mismatch
 		c.log.Warn(ctx, "Checksum mismatch",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 		)
 		if !flags.Update {
 			return nil
@@ -534,13 +534,13 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 		matchFileHash = ""
 	}
 	start := time.Now()
-	h, ph, hh, err := c.writeParityFile(dir, *par, p, matchFileHash)
+	h, ph, hh, err := c.writeParityFile(ctx, dir, *par, p, matchFileHash)
 	duration := time.Since(start)
 	if err != nil {
 		if errors.Is(err, parity.ErrFileNoMatch) {
 			c.log.Warn(ctx, "Checksum mismatch",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 			return nil
 		}
@@ -563,10 +563,6 @@ func (c *Census) syncRepoFileFS(ctx context.Context, files censusdbmodel.Repo, d
 	}
 
 	return nil
-}
-
-func humanHashRate(size int64, duration time.Duration) string {
-	return bytefmt.ToString(float64(size)/duration.Seconds()) + "/s"
 }
 
 func (c *Census) VerifyRepos(ctx context.Context, flags VerifyFlags) error {
@@ -683,14 +679,14 @@ func (c *Census) verifyRepoFileFS(ctx context.Context, files censusdbmodel.Repo,
 			}
 			c.log.Info(ctx, "Verified file",
 				klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-				klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+				klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 			)
 			return true, nil
 		}
 
 		c.log.Info(ctx, "Verified file",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 		)
 
 		start := time.Now()
@@ -714,7 +710,7 @@ func (c *Census) verifyRepoFileFS(ctx context.Context, files censusdbmodel.Repo,
 	} else {
 		c.log.Warn(ctx, "Checksum mismatch",
 			klog.AString("size", bytefmt.ToString(float64(info.Size()))),
-			klog.AString("hashrate", humanHashRate(info.Size(), duration)),
+			klog.AString("hashrate", bytefmt.HumanHashRate(info.Size(), duration)),
 		)
 	}
 
@@ -794,7 +790,7 @@ func (c *Census) readFile(dest io.Writer, dir fs.FS, name string) (retErr error)
 	return nil
 }
 
-func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string, matchFileHash string) (_, _, _ string, retErr error) {
+func (c *Census) writeParityFile(ctx context.Context, dir fs.FS, par parityOpts, name string, matchFileHash string) (_, _, _ string, retErr error) {
 	var matchFileHashBytes parity.Hash
 	if matchFileHash != "" {
 		if b, err := parseHashStrToBytes(matchFileHash); err != nil {
@@ -831,7 +827,7 @@ func (c *Census) writeParityFile(dir fs.FS, par parityOpts, name string, matchFi
 	if !ok {
 		return "", "", "", kerrors.WithMsg(nil, "Parity file is not truncatable")
 	}
-	fileHash, headerHash, err := parity.WriteParityFile(parFile, data, parity.ShardConfig{
+	fileHash, headerHash, err := parity.WriteParityFile(ctx, c.log.Logger, parFile, data, parity.ShardConfig{
 		BlockSize:        par.BlockSize,
 		ShardCount:       par.Shards,
 		ParityShardCount: par.ParityShards,

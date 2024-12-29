@@ -3,6 +3,7 @@ package bytefmt
 import (
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"xorkevin.dev/kerrors"
@@ -86,4 +87,8 @@ func ToString(bytes float64) string {
 		unitname = "KiB"
 	}
 	return strconv.FormatFloat(bytes, 'f', 2, 64) + unitname
+}
+
+func HumanHashRate(size int64, duration time.Duration) string {
+	return ToString(float64(size)/duration.Seconds()) + "/s"
 }

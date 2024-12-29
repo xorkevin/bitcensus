@@ -252,7 +252,7 @@ func TestWriteParityFile(t *testing.T) {
 				retErr = errors.Join(retErr, err)
 			}
 		}()
-		return WriteParityFile(out, inp, ShardConfig{
+		return WriteParityFile(context.Background(), klog.Discard{}, out, inp, ShardConfig{
 			BlockSize:        blockSize,
 			ShardCount:       shardCount,
 			ParityShardCount: parityShardCount,
